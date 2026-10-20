@@ -127,6 +127,18 @@ def test_a_webapp_the_gateway_could_not_serve_reports_why_and_how_to_retry(world
     assert reason in out and "hermes gateway restart" in out
 
 
+def test_behind_the_dashboard_sign_in_the_launcher_opens_the_webapp_to_sign_in(world, capsys):
+    url = "http://127.0.0.1:9120/"
+    world["answers"]["webapp-launch"] = {"ok": True, "result": {
+        "url": url, "private": False, "expires_in_seconds": None, "sign_in": True}}
+    assert launcher.cmd_webapp(_args()) == 0
+    assert world["calls"]["opened"] == [url]
+    assert "sign in" in capsys.readouterr().out.lower()
+    assert launcher.cmd_webapp(_args(no_open=True)) == 0
+    out = capsys.readouterr().out
+    assert url in out and "sign in" in out.lower() and "one-use" not in out
+
+
 def test_no_open_prints_the_link_instead(world, capsys):
     assert launcher.cmd_webapp(_args(no_open=True)) == 0
     assert world["calls"]["opened"] == []

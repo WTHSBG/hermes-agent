@@ -193,6 +193,10 @@ def register_control_verbs(runner, home) -> None:
             raise ValueError("profile must be a profile name")
         query = f"?profile={profile}" if profile else ""  # the page opens on that profile
         status, web = serving()
+        from hermes_cli.web_server_surface import private_launch
+        if not private_launch(web.app.state):
+            # Behind the dashboard's sign-in the page asks for it; a launch link opens only a private Webapp.
+            return {"url": f"{status['url']}/{query}", "private": False, "expires_in_seconds": None, "sign_in": True}
         if not _one_use_links_work():
             return {"url": f"{status['url']}/{query}#hermes-session={web._SESSION_TOKEN}", "private": True,
                     "expires_in_seconds": None}

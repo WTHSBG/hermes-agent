@@ -179,7 +179,8 @@ def test_webapp_verbs_answer_only_an_authenticated_same_user_peer(monkeypatch, t
 def test_where_one_use_links_cannot_be_redeemed_the_launcher_gets_the_private_link(monkeypatch, tmp_path):
     monkeypatch.setattr(webapp, "_one_use_links_work", lambda: False)  # macOS
     runner, _, _ = _start_runtime_api(monkeypatch, tmp_path, "webapp:\n  enabled: true\n  port: 9555\n")
-    web = SimpleNamespace(_SESSION_TOKEN="s" * 43, app=SimpleNamespace(state=SimpleNamespace()))
+    # The gateway mounts the dashboard app as the Webapp surface on a private (loopback) listener.
+    web = SimpleNamespace(_SESSION_TOKEN="s" * 43, app=SimpleNamespace(state=SimpleNamespace(ui_surface="webapp")))
     runner.session_api.app = SimpleNamespace(web=web)
     result = _ask(runner, "webapp-launch")["result"]
     assert result == {"url": "http://127.0.0.1:9555/#hermes-session=" + "s" * 43, "private": True,
@@ -187,9 +188,22 @@ def test_where_one_use_links_cannot_be_redeemed_the_launcher_gets_the_private_li
     assert not getattr(web.app.state, "webapp_window_tickets", None)
 
 
+def test_behind_the_dashboard_sign_in_the_launcher_gets_the_webapp_address(monkeypatch, tmp_path):
+    # The page asks for the sign-in itself; a launch link only works on a private (loopback) Webapp.
+    runner, _, _ = _start_runtime_api(
+        monkeypatch, tmp_path, "webapp:\n  enabled: true\n  host: 0.0.0.0\n  port: 9555\n")
+    state = SimpleNamespace(ui_surface="webapp", auth_required=True)
+    runner.session_api.app = SimpleNamespace(web=SimpleNamespace(_SESSION_TOKEN="s" * 43, app=SimpleNamespace(state=state)))
+    result = _ask(runner, "webapp-launch", params={"profile": "work"})["result"]
+    assert result == {"url": "http://127.0.0.1:9555/?profile=work", "private": False,
+                      "expires_in_seconds": None, "sign_in": True}
+    assert not getattr(state, "webapp_window_tickets", None)
+
+
 def _serving_runner(monkeypatch, tmp_path):
     runner, _, _ = _start_runtime_api(monkeypatch, tmp_path, "webapp:\n  enabled: true\n  port: 9555\n")
-    web = SimpleNamespace(_SESSION_TOKEN="s" * 43, app=SimpleNamespace(state=SimpleNamespace()))
+    # The gateway mounts the dashboard app as the Webapp surface on a private (loopback) listener.
+    web = SimpleNamespace(_SESSION_TOKEN="s" * 43, app=SimpleNamespace(state=SimpleNamespace(ui_surface="webapp")))
     runner.session_api.app = SimpleNamespace(web=web)
     return runner
 

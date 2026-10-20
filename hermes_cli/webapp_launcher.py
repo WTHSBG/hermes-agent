@@ -166,6 +166,13 @@ def cmd_webapp(args) -> int:
     if not response.get("ok"):
         return _explain_refused_launch(target, response)
     link = response["result"]
+    if link.get("sign_in"):
+        # The Webapp is behind the dashboard's sign-in: the page asks for it, so its address is no secret.
+        if not args.no_open and _open(link["url"]):
+            print("Opened the Webapp in your browser. Sign in with your dashboard account.")
+        else:
+            print(f"Open the Webapp and sign in with your dashboard account: {link['url']}")
+        return 0
     if link.get("private"):
         # The gateway's own credential (macOS, where a one-use link cannot be redeemed): for the user
         # to open, never for a browser launcher whose arguments other processes can read.
