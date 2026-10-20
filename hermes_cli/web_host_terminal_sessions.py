@@ -74,17 +74,13 @@ class HostOwner:
 
 
 def _request_identity(ws: WebSocket) -> tuple[str, str]:
-    identity = getattr(ws, "_hermes_auth_identity", None)
-    if identity:
-        user, provider = identity.get("user_id"), identity.get("provider")
-        if not isinstance(user, str) or not user or not isinstance(provider, str) or not provider:
-            raise TerminalDenied()
-        return provider, user
-    from hermes_cli.web_server import app
-    if getattr(app.state, "auth_required", False):
+    """``(provider, user)`` of the terminal ticket that admitted *ws*; ``_ws_gate`` admits no other
+    credential to the host terminal."""
+    identity = getattr(ws, "_hermes_auth_identity", None) or {}
+    user, provider = identity.get("user_id"), identity.get("provider")
+    if not isinstance(user, str) or not user or not isinstance(provider, str) or not provider:
         raise TerminalDenied()
-    # _ws_gate already validated the process's loopback credential.
-    return "loopback", "session-token"
+    return provider, user
 
 
 def _request_home(profile: str | None) -> Path:

@@ -843,7 +843,8 @@ describe('browser-hosted Desktop bridge', () => {
     seedWebappSession('served-token')
     $connection.set({ profile: 'active-terminal' } as never)
 
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 })))
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ ticket: 'shell-ticket' })))
+    vi.stubGlobal('fetch', fetchMock)
 
     class FakeWebSocket {
       static readonly CONNECTING = 0
@@ -900,7 +901,9 @@ describe('browser-hosted Desktop bridge', () => {
     await expect(win.hermesDesktop!.terminal.attach(session.id)).resolves.toBe(true)
     await expect(win.hermesDesktop!.terminal.attach('missing-terminal')).resolves.toBe(false)
     expect(url.pathname).toBe('/hermes/api/host-terminal')
-    expect(url.searchParams.get('token')).toBe('served-token')
+    expect(url.searchParams.get('ticket')).toBe('shell-ticket')
+    expect(socket.url).not.toContain('served-token')
+    expect((fetchMock.mock.calls[0][0] as URL).pathname).toBe('/hermes/api/webapp/terminal-ticket')
     expect(url.searchParams.get('profile')).toBe('active-terminal')
     expect(url.searchParams.get('cwd')).toBe('/work')
     expect(url.searchParams.get('cols')).toBe('42')
@@ -932,10 +935,50 @@ describe('browser-hosted Desktop bridge', () => {
     await expect(win.hermesDesktop!.terminal.dispose(session.id)).resolves.toBe(true)
   })
 
+  it('opens the host shell of a signed-in browser with a terminal ticket from its cookie session', async () => {
+    const win = mutableWindow()
+    win.__HERMES_AUTH_REQUIRED__ = true
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ ticket: 'shell-ticket' })))
+    vi.stubGlobal('fetch', fetchMock)
+    const dialed: string[] = []
+
+    class SignedInSocket {
+      binaryType = ''
+      onclose: ((event: CloseEvent) => void) | null = null
+      onerror: (() => void) | null = null
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onopen: (() => void) | null = null
+      readyState = 0
+
+      constructor(url: string | URL) {
+        dialed.push(String(url))
+        queueMicrotask(() => {
+          this.readyState = 1
+          this.onopen?.()
+          this.onmessage?.({ data: '\u0000HERMES_TERMINAL_META:{"shell":"sh"}' } as MessageEvent)
+        })
+      }
+
+      close() {}
+      send() {}
+    }
+
+    vi.stubGlobal('WebSocket', SignedInSocket)
+    expect(installBrowserDesktopBridge()).toBe(true)
+    await win.hermesDesktop!.terminal.start({ cwd: '/work' })
+
+    const [mint, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+    expect(mint.pathname).toBe('/api/webapp/terminal-ticket')
+    expect(init.method).toBe('POST')
+    expect(init.credentials).toBe('same-origin')
+    expect(new Headers(init.headers).has('X-Hermes-Session-Token')).toBe(false)
+    expect(new URL(dialed[0]).searchParams.get('ticket')).toBe('shell-ticket')
+  })
+
   it('buffers early host-shell output until Desktop registers its terminal data listener', async () => {
     const win = mutableWindow()
     seedWebappSession('served-token')
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 })))
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(JSON.stringify({ ticket: 'shell-ticket' }))))
 
     class PromptWebSocket {
       static readonly OPEN = 1

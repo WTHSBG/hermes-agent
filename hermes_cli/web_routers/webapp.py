@@ -1,7 +1,8 @@
 """Webapp-only routes: the host terminal (loopback or authenticated binds), the
-one-use ticket each browser socket dial mints (``/api/webapp/gateway-ticket``, for
-``/api/ws`` on this same origin), and the one-use handoffs (child window, auto-opened
-launch tab) for the private, loopback Webapp session."""
+one-use ticket each browser socket dial mints (``/api/webapp/gateway-ticket`` for
+``/api/ws`` on this same origin, ``/api/webapp/terminal-ticket`` for the host terminal),
+and the one-use handoffs (child window, auto-opened launch tab) for the private, loopback
+Webapp session."""
 from __future__ import annotations
 
 import ipaddress
@@ -18,6 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from hermes_cli.dashboard_auth.request_utils import _http_origin
 from hermes_cli.web_server_surface import policy, private_launch
+from hermes_cli.web_session_sockets import GATEWAY_SOCKET, HOST_TERMINAL_SOCKET
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
@@ -26,6 +28,9 @@ WINDOW_TICKET_TTL_SECONDS = 30
 LAUNCH_TICKET_TTL_SECONDS = 60
 _MAX_WINDOW_TICKETS = 128
 _ticket_lock = threading.Lock()
+#: Who a socket opened with the loopback session token is (``chat_ws.gateway_ws`` gives a
+#: ``?token=`` socket the same identity, and REST mutations are forwarded as it).
+SESSION_TOKEN_OWNER = {"user_id": "legacy-token-owner", "provider": "session-token", "issuer": ""}
 
 
 def _require_private_webapp(request: Request) -> None:
@@ -39,7 +44,7 @@ async def host_terminal_ws(ws: WebSocket) -> None:
     from hermes_cli.web_host_terminal_sessions import host_terminal
     from hermes_cli.web_server_chat import _PTY_BRIDGE_AVAILABLE, PtyUnavailableError, _pty_fail, _ws_gate
 
-    gate = await _ws_gate(ws, "host-terminal")
+    gate = await _ws_gate(ws, HOST_TERMINAL_SOCKET)
     if gate is None:
         return
     peer, mode, cred = gate
@@ -143,37 +148,69 @@ async def issue_window_ticket(request: Request):
     return JSONResponse({"ticket": ticket}, headers={"Cache-Control": "no-store"})
 
 
-def _ticket_principal(request: Request) -> dict:
-    """``{user_id, provider, issuer}`` of the caller: its verified login, or on an unauthenticated
-    loopback bind the session-token owner, the identity ``chat_ws.gateway_ws`` gives a ``?token=``
-    socket (and REST mutations are forwarded as)."""
+def _ticket_principal(request: Request) -> tuple[dict, str | None]:
+    """``({user_id, provider, issuer}, session_token)`` of the caller: its verified login (no
+    token), or on an unauthenticated loopback bind ``SESSION_TOKEN_OWNER`` and the session token
+    it presented."""
     session = getattr(request.state, "session", None)
     if session is not None:
         return {"user_id": session.user_id, "provider": session.provider,
-                "issuer": getattr(session, "issuer", "") or ""}
+                "issuer": getattr(session, "issuer", "") or ""}, None
     if not getattr(request.app.state, "auth_required", False):
-        from hermes_cli.web_server import _has_valid_session_token
+        from hermes_cli.web_server import _SESSION_HEADER_NAME, _has_valid_session_token
+        presented = (request.headers.get(_SESSION_HEADER_NAME)
+                     or request.headers.get("authorization", "").removeprefix("Bearer "))
         if _has_valid_session_token(request):
-            return {"user_id": "legacy-token-owner", "provider": "session-token", "issuer": ""}
+            return dict(SESSION_TOKEN_OWNER), presented
     raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def mint_socket_ticket(identity: dict, socket: str, *, session_token: str | None = None) -> str:
+    """A one-use ticket that opens only *socket* (``web_session_sockets.GATEWAY_SOCKET`` or
+    ``HOST_TERMINAL_SOCKET``) as *identity*. Minted with *session_token*, it opens nothing once that
+    token is replaced, and the socket it opens closes when the browser signs out."""
+    from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+    from hermes_cli.web_session_sockets import token_digest
+
+    extra = {"socket": socket}
+    if session_token is not None:
+        extra["session_token"] = token_digest(session_token)
+    return mint_ticket(user_id=identity["user_id"], provider=identity["provider"],
+                       issuer=identity.get("issuer", ""), extra=extra)
+
+
+def _socket_ticket_response(identity: dict, socket: str, session_token: str | None) -> JSONResponse:
+    from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS
+
+    ticket = mint_socket_ticket(identity, socket, session_token=session_token)
+    return JSONResponse({"ticket": ticket, "ttl_seconds": TTL_SECONDS}, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/api/webapp/gateway-ticket")
 async def issue_gateway_ticket(request: Request, profile: str | None = None):
     """The browser's one-use ticket for its live socket: ``/api/ws`` on this same origin, offered
     as the ``hermes-gateway-ticket.`` subprotocol and redeemed by the upgrade gate
-    (``web_server_chat._consume_ws_ticket``) as this caller's login. Minted locally: the server
-    that serves this page runs the socket's sessions. *profile* is validated (400/404) so a stale
-    tab learns its profile is gone here rather than from a socket that keeps closing."""
-    from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS, mint_ticket
+    (``web_server_chat._consume_ws_ticket``) as this caller's login. It opens no other socket.
+    Minted locally: the server that serves this page runs the socket's sessions. *profile* is
+    validated (400/404) so a stale tab learns its profile is gone here rather than from a socket
+    that keeps closing."""
     from hermes_cli.web_server_cron import _cron_profile_home
 
     if not policy(request.app.state).gateway_ticket:
         raise HTTPException(404, "Webapp gateway tickets are unavailable on this surface")
-    identity = _ticket_principal(request)
+    identity, session_token = _ticket_principal(request)
     _cron_profile_home(profile)
-    ticket = mint_ticket(user_id=identity["user_id"], provider=identity["provider"], issuer=identity["issuer"])
-    return JSONResponse({"ticket": ticket, "ttl_seconds": TTL_SECONDS}, headers={"Cache-Control": "no-store"})
+    return _socket_ticket_response(identity, GATEWAY_SOCKET, session_token)
+
+
+@router.post("/api/webapp/terminal-ticket")
+async def issue_terminal_ticket(request: Request):
+    """The browser's one-use ticket for one host-terminal dial (``/api/host-terminal?ticket=``).
+    The host terminal opens with nothing else, and this ticket opens nothing else."""
+    if not policy(request.app.state).host_terminal:
+        raise HTTPException(404, "The host terminal is unavailable on this surface")
+    identity, session_token = _ticket_principal(request)
+    return _socket_ticket_response(identity, HOST_TERMINAL_SOCKET, session_token)
 
 
 @router.post("/webapp/window-session")

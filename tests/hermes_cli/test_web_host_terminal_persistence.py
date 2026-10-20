@@ -10,6 +10,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from hermes_cli import web_host_terminal, web_server, web_server_chat
 from hermes_cli.web_routers.webapp import router
+from hermes_cli.web_session_sockets import HOST_TERMINAL_SOCKET
 from tests.waiting import async_wait_until
 
 
@@ -35,7 +36,10 @@ def host_app(tmp_path, monkeypatch):
 
 
 def url(extra=""):
-    return f"ws://localhost/api/host-terminal?token={web_server._SESSION_TOKEN}{extra}"
+    """A host-terminal URL with a fresh terminal ticket minted with this process's session token."""
+    from hermes_cli.web_routers.webapp import SESSION_TOKEN_OWNER, mint_socket_ticket
+    ticket = mint_socket_ticket(SESSION_TOKEN_OWNER, HOST_TERMINAL_SOCKET, session_token=web_server._SESSION_TOKEN)
+    return f"ws://localhost/api/host-terminal?ticket={ticket}{extra}"
 
 
 def metadata(ws):
@@ -317,8 +321,9 @@ def rejection(client, request, expected):
 
 
 def ticket_url(user="owner", extra=""):
-    from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
-    ticket = mint_ticket(user_id=user, provider="test-provider")
+    """A host-terminal URL with a fresh terminal ticket for a signed-in *user*."""
+    from hermes_cli.web_routers.webapp import mint_socket_ticket
+    ticket = mint_socket_ticket({"user_id": user, "provider": "test-provider"}, HOST_TERMINAL_SOCKET)
     return f"ws://localhost/api/host-terminal?ticket={ticket}{extra}"
 
 

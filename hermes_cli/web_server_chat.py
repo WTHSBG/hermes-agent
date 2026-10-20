@@ -7,6 +7,7 @@ import asyncio
 import atexit
 import concurrent.futures
 import contextlib
+import functools
 import hmac
 import os
 import re
@@ -199,12 +200,16 @@ def _ws_request_view(ws: WebSocket) -> Request:
     })
 
 
-def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False) -> tuple[Optional[str], str]:
+def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False,
+                    socket: Optional[str] = None) -> tuple[Optional[str], str]:
     """Validate WS-upgrade auth; return ``(reason, credential)``.
 
     ``reason`` is None when accepted, else a short token (``no_credential``,
     ``token_mismatch``, ``ticket_invalid``, ``internal_invalid``);
     ``credential`` names what was presented so the accept path can log *how*.
+    *socket* names the route's socket for its own tickets
+    (``web_session_sockets.GATEWAY_SOCKET`` / ``HOST_TERMINAL_SOCKET``): a ticket minted for
+    one socket opens no other, and the host terminal opens only with its own ticket.
 
     Loopback / ``--insecure``: legacy ``?token=`` (constant-time compared).
     Gated: ``?ticket=`` (browser-minted, single-use, 30s TTL) or ``?internal=``
@@ -225,23 +230,25 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False) -> tuple[Opt
     """
     from hermes_cli.dashboard_auth.native_http import HEADER, authenticate_native_ws
     from hermes_cli.web_server import _SESSION_TOKEN, app
+    from hermes_cli.web_session_sockets import OWN_TICKET_SOCKETS, token_digest, track
+    auth_required = bool(getattr(app.state, "auth_required", False))
+    if socket in OWN_TICKET_SOCKETS:
+        # No standing credential (the session token, a native grant, a login's access token) opens it.
+        reject = functools.partial(_audit_ws_rejection, ws) if auth_required else _ignore_rejection
+        return _consume_ws_ticket(ws, reject, socket, auth_required=auth_required) or ("no_credential", "none")
     if HEADER in ws.headers:
         grant = authenticate_native_ws(ws)
         if grant is None:
             return "native_invalid", "native"
         ws._hermes_auth_identity = {"user_id": grant["subject"], "provider": "local"}
         return None, "native"
-    auth_required = bool(getattr(app.state, "auth_required", False))
     if auth_required:
         # Lazy import — keeps this function importable in test harnesses
         # that don't bring in the dashboard_auth layer.
         from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
         from hermes_cli.dashboard_auth.ws_tickets import TicketInvalid, consume_internal_credential
 
-        def _reject(reason: str) -> None:
-            audit_log(
-                AuditEvent.WS_TICKET_REJECTED, reason=reason,
-                ip=(ws.client.host if ws.client else ""), path=ws.url.path)
+        _reject = functools.partial(_audit_ws_rejection, ws)
 
         def _stamp_identity(info) -> None:
             # Server-minted {user_id, provider} stamped onto the WS object is the
@@ -266,7 +273,7 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False) -> tuple[Opt
                 _reject(f"internal: {exc}")
                 return "internal_invalid", "internal"
 
-        consumed = _consume_ws_ticket(ws, _reject)
+        consumed = _consume_ws_ticket(ws, _reject, socket, auth_required=True)
         if consumed is not None:
             return consumed
 
@@ -319,23 +326,38 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False) -> tuple[Opt
 
     # Loopback: a one-use ticket ``/api/webapp/gateway-ticket`` minted for the session-token owner
     # (the Webapp's live socket on this same origin), else the legacy ``?token=``.
-    consumed = _consume_ws_ticket(ws, lambda reason: None)
+    consumed = _consume_ws_ticket(ws, _ignore_rejection, socket)
     if consumed is not None:
         return consumed
     token = ws.query_params.get("token", "")
     if not token:
         return "no_credential", "none"
     if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+        track(ws, token_digest(token))
         return None, "token"
     return "token_mismatch", "token"
 
 
-def _consume_ws_ticket(ws: WebSocket, reject) -> Optional[tuple[Optional[str], str]]:
+def _ignore_rejection(reason: str) -> None:
+    """The loopback gate keeps no audit record of a refused credential."""
+
+
+def _audit_ws_rejection(ws: WebSocket, reason: str) -> None:
+    """The gated gate's audit record of a refused upgrade credential."""
+    from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
+    audit_log(AuditEvent.WS_TICKET_REJECTED, reason=reason, ip=(ws.client.host if ws.client else ""),
+              path=ws.url.path)
+
+
+def _consume_ws_ticket(ws: WebSocket, reject, socket: Optional[str] = None, *,
+                       auth_required: bool = False) -> Optional[tuple[Optional[str], str]]:
     """A one-use ticket offered as the ``hermes-gateway-ticket.`` subprotocol or ``?ticket=``:
     ``(reason, credential)`` once judged, or None when the upgrade presents none. An accepted ticket
     stamps the server-minted identity onto the socket; the client never supplies it through RPC
-    params."""
+    params. *socket* is the route's socket (``web_session_sockets.ticket_refusal``); a socket a
+    session-token ticket opens is tracked so signing out closes it."""
     from hermes_cli.dashboard_auth.ws_tickets import TicketInvalid, consume_ticket
+    from hermes_cli.web_session_sockets import ticket_refusal, track
     protocol_ticket, protocol_reason = _gateway_ws_ticket_from_subprotocol(ws)
     if protocol_reason == "invalid":
         return "ticket_invalid", "ticket-subprotocol"
@@ -347,6 +369,10 @@ def _consume_ws_ticket(ws: WebSocket, reject) -> Optional[tuple[Optional[str], s
     except TicketInvalid as exc:
         reject(str(exc))
         return "ticket_invalid", "ticket"
+    refusal = ticket_refusal(info, socket, auth_required=auth_required)
+    if refusal is not None:
+        reject(refusal)
+        return "ticket_invalid", "ticket"
     if info.get("provider") == "bot-desktop":
         # A display ticket admits one RFB bridge on /api/display/ws (a watch-only capability handed
         # to a screen viewer); it must not double as a login here.
@@ -356,6 +382,8 @@ def _consume_ws_ticket(ws: WebSocket, reject) -> Optional[tuple[Optional[str], s
     ws._hermes_auth_identity = {"user_id": info.get("user_id"), "provider": info.get("provider")}
     if info.get("issuer"):
         ws._hermes_auth_identity["issuer"] = info["issuer"]
+    if "session_token" in info:
+        track(ws, info["session_token"])
     if not protocol_ticket:
         return None, "ticket"
     # Select only the stable public protocol during accept. The ticket-bearing protocol is a
@@ -364,9 +392,9 @@ def _consume_ws_ticket(ws: WebSocket, reject) -> Optional[tuple[Optional[str], s
     return None, "ticket-subprotocol"
 
 
-def _ws_auth_ok(ws: WebSocket, *, allow_internal: bool = False) -> bool:
+def _ws_auth_ok(ws: WebSocket, *, allow_internal: bool = False, socket: Optional[str] = None) -> bool:
     """True when the WS-upgrade credential is accepted. See _ws_auth_reason."""
-    return _ws_auth_reason(ws, allow_internal=allow_internal)[0] is None
+    return _ws_auth_reason(ws, allow_internal=allow_internal, socket=socket)[0] is None
 
 
 def _ws_auth_mode() -> str:
@@ -404,7 +432,7 @@ async def _ws_gate(ws: WebSocket, kind: str) -> Optional[tuple[str, str, str]]:
         await ws.close(code=4404, reason="embedded chat disabled")
         return None
 
-    auth_reason, cred = _ws_auth_reason(ws)
+    auth_reason, cred = _ws_auth_reason(ws, socket=kind)
     mode = _ws_auth_mode()
     if auth_reason is not None:
         _log.warning("%s auth rejected reason=%s mode=%s cred=%s peer=%s", kind, auth_reason, mode, cred, peer)

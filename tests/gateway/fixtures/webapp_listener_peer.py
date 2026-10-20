@@ -14,6 +14,78 @@ import traceback
 SEEDED_TOKEN = "seeded-browser-credential-from-an-earlier-0"  # 43 URL-safe characters
 
 
+async def _upgrade_refusal(url, **kwargs):
+    """The HTTP status a refused upgrade answers, or ``"accepted"``."""
+    from websockets.asyncio.client import connect
+    from websockets.exceptions import InvalidStatus
+
+    try:
+        async with connect(url, **kwargs):
+            return "accepted"
+    except InvalidStatus as exc:
+        return exc.response.status_code
+
+
+async def _close_code(ws, seconds=10):
+    """The code the server closed *ws* with, reading past any frames it sends first."""
+    from websockets.exceptions import ConnectionClosed
+
+    try:
+        async with asyncio.timeout(seconds):
+            while True:
+                await ws.recv()
+    except ConnectionClosed as exc:
+        return exc.rcvd.code if exc.rcvd else None
+    except TimeoutError:
+        return "open"
+
+
+async def sockets_across_sign_out(runner, client, origin, ask):
+    """A tab's chat socket and host terminal and a native client's session socket, open across a
+    sign-out; also what each browser socket ticket refuses to open."""
+    from websockets.asyncio.client import connect
+
+    from gateway.runtime_bootstrap import TicketStore
+    from hermes_cli import web_host_terminal, web_server
+    from tests.gateway.fixtures.local_recovery_probe import rpc
+
+    # A harmless program stands in for the user's login shell.
+    web_host_terminal.shell_spec = lambda: ([sys.executable, "-c", "import time; time.sleep(120)"], "python")
+    sockets = origin.replace("http:", "ws:")
+    session = {"X-Hermes-Session-Token": web_server._SESSION_TOKEN}
+
+    async def ticket(kind):
+        return (await client.post(f"/api/webapp/{kind}-ticket", headers=session)).json()["ticket"]
+
+    def chat_protocols(value):
+        return ["hermes-gateway-v1", f"hermes-gateway-ticket.{value}"]
+
+    report = {
+        "terminal_refuses_session_token": await _upgrade_refusal(
+            f"{sockets}/api/host-terminal?token={web_server._SESSION_TOKEN}", origin=origin),
+        "terminal_refuses_chat_ticket": await _upgrade_refusal(
+            f"{sockets}/api/host-terminal?ticket={await ticket('gateway')}", origin=origin),
+        "chat_refuses_terminal_ticket": await _upgrade_refusal(
+            f"{sockets}/api/ws?native_dial=browser", origin=origin,
+            subprotocols=chat_protocols(await ticket("terminal"))),
+    }
+    authority = runner.session_authority
+    runner.session_ticket_store = TicketStore("webapp-listener", frozenset({authority.profile_id}))
+    native_ticket = runner.session_ticket_store.mint(
+        profile_id=authority.profile_id, subject="fixture-same-user", purpose="interactive")
+    async with connect(f"{sockets}/api/ws?native_dial=browser", origin=origin,
+                       subprotocols=chat_protocols(await ticket("gateway"))) as chat, \
+            connect(f"{sockets}/api/host-terminal?ticket={await ticket('terminal')}", origin=origin) as terminal, \
+            connect(f"{sockets}/api/ws", subprotocols=chat_protocols(native_ticket)) as native:
+        report["terminal_opens_with_its_ticket"] = (await terminal.recv()).startswith(web_host_terminal.META_PREFIX)
+        report["chat_opens_before_sign_out"] = "result" in await rpc(chat, "session.list")
+        report["sign_out_ok"] = ask("webapp-sign-out")["ok"]
+        report["chat_close_after_sign_out"] = await _close_code(chat)
+        report["terminal_close_after_sign_out"] = await _close_code(terminal)
+        report["native_answers_after_sign_out"] = "result" in await rpc(native, "session.list")
+    return report
+
+
 async def probe(mode, port, dist):
     import httpx
     from websockets.asyncio.client import connect
@@ -87,7 +159,7 @@ async def probe(mode, port, dist):
                     redeemed.json()["token"] == SEEDED_TOKEN)
                 report["handoff_reuse_status"] = (
                     await client.post("/webapp/window-session", headers=handoff)).status_code
-                report["sign_out_ok"] = ask("webapp-sign-out")["ok"]
+                report.update(await sockets_across_sign_out(runner, client, origin, ask))
                 stale = await client.post("/api/webapp/gateway-ticket",
                                           headers={"X-Hermes-Session-Token": SEEDED_TOKEN})
                 report["old_credential_status"] = stale.status_code

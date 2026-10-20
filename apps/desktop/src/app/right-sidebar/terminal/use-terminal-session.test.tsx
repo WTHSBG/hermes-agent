@@ -137,6 +137,18 @@ function Harness({ id }: { id: string }) {
 beforeEach(() => {
   window.dispatchEvent(new PageTransitionEvent('pageshow'))
   localStorage.clear()
+  // A Webapp tab dials each host terminal with a one-use ticket from the ticket route.
+  const realFetch = globalThis.fetch
+  let minted = 0
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(String(input), window.location.href).pathname.endsWith('/api/webapp/terminal-ticket')) {
+      minted += 1
+
+      return new Response(JSON.stringify({ ticket: `shell-ticket-${minted}` }), { status: 200 })
+    }
+
+    return realFetch(input, init)
+  }))
 })
 
 afterEach(() => {

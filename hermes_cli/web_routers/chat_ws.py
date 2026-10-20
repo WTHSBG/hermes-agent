@@ -23,6 +23,7 @@ from hermes_cli.web_server_chat import (
     _build_sidecar_url, _close_stalled_pty_input, _get_console_executor, _legacy_pump, _pty_fail, _ws_auth_ok,
     _ws_close_reason, _ws_gate, _ws_request_is_allowed,
 )
+from hermes_cli.web_session_sockets import GATEWAY_SOCKET
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
@@ -98,13 +99,14 @@ def _read_active_session_file(path: Path) -> Optional[str]:
     return str(data.get("session_id") or "").strip() or None
 
 
-async def _close_unless_sidecar_allowed(ws: WebSocket, *, allow_internal: bool = False) -> bool:
+async def _close_unless_sidecar_allowed(ws: WebSocket, *, allow_internal: bool = False,
+                                        socket: Optional[str] = None) -> bool:
     """Pre-accept gates for the /api/ws, /api/pub and /api/events sidecars:
     4403 when chat is disabled or the request isn't allowed, 4401 on bad auth."""
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         await ws.close(code=4403)
         return False
-    if not _ws_auth_ok(ws, allow_internal=allow_internal):
+    if not _ws_auth_ok(ws, allow_internal=allow_internal, socket=socket):
         await ws.close(code=4401)
         return False
     if not _ws_request_is_allowed(ws):
@@ -630,7 +632,7 @@ async def pty_ws(ws: WebSocket) -> None:
 
 @router.websocket("/api/ws")
 async def gateway_ws(ws: WebSocket) -> None:
-    if not await _close_unless_sidecar_allowed(ws, allow_internal=True):
+    if not await _close_unless_sidecar_allowed(ws, allow_internal=True, socket=GATEWAY_SOCKET):
         return
     from hermes_cli.mcp_startup import start_deferred_mcp_discovery_now
     from tui_gateway.ws import handle_ws

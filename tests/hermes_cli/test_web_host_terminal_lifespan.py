@@ -61,7 +61,8 @@ def test_real_shells_remain_owned_after_overlapping_lifespan_exit(tmp_path, monk
     import psutil
 
     from hermes_cli import web_host_terminal, web_server
-    from hermes_cli.web_routers.webapp import router
+    from hermes_cli.web_routers.webapp import SESSION_TOKEN_OWNER, mint_socket_ticket, router
+    from hermes_cli.web_session_sockets import HOST_TERMINAL_SOCKET
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -75,12 +76,14 @@ def test_real_shells_remain_owned_after_overlapping_lifespan_exit(tmp_path, monk
     monkeypatch.setattr(web_host_terminal, "shell_spec", lambda: (["/bin/sh", "-i"], "sh"))
     app = FastAPI(lifespan=host_terminal_lifespan)
     app.include_router(router)
-    url = f"ws://localhost/api/host-terminal?token={web_server._SESSION_TOKEN}"
+    def url():
+        ticket = mint_socket_ticket(SESSION_TOKEN_OWNER, HOST_TERMINAL_SOCKET, session_token=web_server._SESSION_TOKEN)
+        return f"ws://localhost/api/host-terminal?ticket={ticket}"
     bridges = []
     processes = []
 
     def open_shell(client):
-        with client.websocket_connect(url) as ws:
+        with client.websocket_connect(url()) as ws:
             metadata = json.loads(ws.receive_text().removeprefix(web_host_terminal.META_PREFIX))
             session = get_host_terminals(app)._sessions[metadata["terminalId"]]
             bridges.append(session.bridge)
@@ -111,7 +114,7 @@ def test_real_shells_remain_owned_after_overlapping_lifespan_exit(tmp_path, monk
 
         # An accepted request outside a lifespan must fail, not spawn a shell.
         # TestClient without a context deliberately does not run startup.
-        with TestClient(app).websocket_connect(url) as ws:
+        with TestClient(app).websocket_connect(url()) as ws:
             assert "terminalId" not in ws.receive_text()
             with pytest.raises(WebSocketDisconnect) as error:
                 ws.receive_bytes()

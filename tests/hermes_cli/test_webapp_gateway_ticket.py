@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from hermes_cli.web_session_sockets import GATEWAY_SOCKET
+
 _TOKEN = "a" * 43
 
 
@@ -48,12 +50,12 @@ def test_loopback_ticket_names_the_session_token_owner_and_is_spent_once(webapp)
     body = minted.json()
     assert set(body) == {"ticket", "ttl_seconds"} and body["ttl_seconds"] > 0
     first = _socket(body["ticket"])
-    assert chat._ws_auth_ok(first) is True
+    assert chat._ws_auth_ok(first, socket=GATEWAY_SOCKET) is True
     # The same identity ``chat_ws.gateway_ws`` gives a ``?token=`` socket, and only the public protocol.
     assert first._hermes_auth_identity == {"user_id": "legacy-token-owner", "provider": "session-token"}
     assert first._hermes_ws_subprotocol == chat._GATEWAY_WS_PROTOCOL
     assert not hasattr(first, "_hermes_gateway_home")
-    assert chat._ws_auth_ok(_socket(body["ticket"])) is False
+    assert chat._ws_auth_ok(_socket(body["ticket"]), socket=GATEWAY_SOCKET) is False
 
 
 def test_a_missing_profile_is_refused_before_a_ticket_exists(webapp):

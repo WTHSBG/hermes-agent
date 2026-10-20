@@ -1,5 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
 
+import { pluginSocket } from '@/api/plugins'
+
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 import { consumeWebappSession, watchWebappLaunchLink } from './browser-launch-session'
 
@@ -40,9 +42,13 @@ it('uses one private session for REST, RPC and terminal across reload without lo
 
   vi.stubGlobal('WebSocket', Socket)
 
-  const fetchMock = vi.fn().mockImplementation(async (url: URL) =>
-    new Response(url.pathname.endsWith('/api/webapp/gateway-ticket') ? '{"ticket":"rpc-ticket"}' : '{"ok":true}', { status: 200 })
-  )
+  const minted: Record<string, string> = { 'gateway-ticket': 'rpc-ticket', 'terminal-ticket': 'shell-ticket' }
+
+  const fetchMock = vi.fn().mockImplementation(async (url: URL) => {
+    const ticket = minted[url.pathname.split('/api/webapp/')[1] ?? '']
+
+    return new Response(ticket ? JSON.stringify({ ticket }) : '{"ok":true}', { status: 200 })
+  })
 
   vi.stubGlobal('fetch', fetchMock)
   expect(installBrowserDesktopBridge()).toBe(true)
@@ -62,9 +68,21 @@ it('uses one private session for REST, RPC and terminal across reload without lo
   expect(rpcUrl.searchParams.get('profile')).toBe('coder')
   const mint = fetchMock.mock.calls.find(([url]) => (url as URL).pathname === '/one/api/webapp/gateway-ticket')!
   expect(new Headers(mint[1].headers).get('X-Hermes-Session-Token')).toBe(token)
+  // Terminal: each dial mints its own one-use ticket the same way.
   await desktop.terminal.start({ cwd: '/work' })
   expect(urls[0].pathname).toBe('/one/api/host-terminal')
-  expect(urls[0].searchParams.get('token')).toBe(token)
+  expect(urls[0].searchParams.get('ticket')).toBe('shell-ticket')
+  const shellMint = fetchMock.mock.calls.find(([url]) => (url as URL).pathname === '/one/api/webapp/terminal-ticket')!
+  expect(shellMint[1].method).toBe('POST')
+  expect(new Headers(shellMint[1].headers).get('X-Hermes-Session-Token')).toBe(token)
+  // A plugin's live socket cannot carry a ticket here; it stays on its polling fallback.
+  const stopPluginSocket = pluginSocket('kanban', '/events', () => undefined)
+  await new Promise(resolve => setTimeout(resolve, 20))
+  stopPluginSocket()
+  // No URL this tab requested or dialed carries the session token: it rides only the request header.
+  const requested = [...fetchMock.mock.calls.map(([url]) => String(url)), ...urls.map(String), rpcUrl.href]
+  expect(requested.filter(url => url.includes(token))).toEqual([])
+  expect(urls).toHaveLength(1)
   window.dispatchEvent(new Event('beforeunload'))
   Reflect.deleteProperty(window, 'hermesDesktop')
   window.history.replaceState(null, '', '/one/?profile=coder#/settings')

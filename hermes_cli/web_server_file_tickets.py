@@ -87,6 +87,12 @@ def mint(route: str, query: Mapping[str, str], *, authority: FileAuthority) -> s
     return ticket
 
 
+def revoke_all() -> None:
+    """Drop every ticket: the session token that authorized them was replaced (sign-out)."""
+    with _lock:
+        _tickets.clear()
+
+
 def redeem(request: Request) -> bool:
     """True when ``?ticket=`` authorizes this exact request; consumes a download ticket."""
     ticket = request.query_params.get("ticket", "")

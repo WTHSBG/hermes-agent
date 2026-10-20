@@ -4,8 +4,9 @@ With it on, the dashboard mount serves the Webapp bundle without the session tok
 browser credential is the one kept in the gateway home (so it survives a restart), the host terminal
 registry runs, and a browser holding that credential gets a socket ticket and opens a gateway session
 on the same origin. The launcher's link comes over the control socket and spends once; signing out
-replaces the credential. With it off, the listener is main's private one: no Webapp surface, no ticket
-route, no credential file, no launch link.
+replaces the credential and closes the browser sockets it opened, while native clients stay
+connected. Each browser socket ticket opens only its own socket. With it off, the listener is main's
+private one: no Webapp surface, no ticket route, no credential file, no launch link.
 """
 import json
 from pathlib import Path
@@ -94,6 +95,22 @@ def test_signing_out_cuts_off_the_old_browser_credential(webapp_on):
     assert report["sign_out_ok"] is True
     assert report["old_credential_status"] == 401
     assert report["token_file_rotated"] is True
+
+
+def test_each_browser_socket_ticket_opens_only_its_own_socket(webapp_on):
+    _, report = webapp_on
+    assert report["terminal_opens_with_its_ticket"] is True
+    assert report["chat_opens_before_sign_out"] is True
+    assert report["terminal_refuses_session_token"] == 403
+    assert report["terminal_refuses_chat_ticket"] == 403
+    assert report["chat_refuses_terminal_ticket"] == 403
+
+
+def test_signing_out_closes_the_browser_sockets_and_keeps_native_clients(webapp_on):
+    _, report = webapp_on
+    assert report["chat_close_after_sign_out"] == 4401
+    assert report["terminal_close_after_sign_out"] == 4401
+    assert report["native_answers_after_sign_out"] is True
 
 
 def test_without_the_webapp_the_listener_stays_mains_private_one(webapp_off):

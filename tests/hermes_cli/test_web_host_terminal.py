@@ -34,13 +34,18 @@ def test_host_terminal_rejection_runs_through_websocket_route(
     from starlette.testclient import TestClient
     from starlette.websockets import WebSocketDisconnect
 
+    from hermes_cli.web_routers.webapp import SESSION_TOKEN_OWNER, mint_socket_ticket
+    from hermes_cli.web_session_sockets import HOST_TERMINAL_SOCKET
+
     monkeypatch.setattr(web_server.app.state, "ui_surface", surface, raising=False)
     monkeypatch.setattr(web_server.app.state, "bound_host", bound_host, raising=False)
     monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
 
     with pytest.raises(WebSocketDisconnect) as exc:
         with TestClient(web_server.app).websocket_connect(
-            f"/api/host-terminal?token={web_server._SESSION_TOKEN}", headers=headers
+            "/api/host-terminal?ticket=" + mint_socket_ticket(
+                SESSION_TOKEN_OWNER, HOST_TERMINAL_SOCKET, session_token=web_server._SESSION_TOKEN),
+            headers=headers,
         ):
             pass
 
