@@ -372,6 +372,19 @@ def test_fs_endpoints_require_auth(tmp_path):
     assert default_response.status_code == 401
 
 
+def test_fs_default_cwd_leaves_a_placeholder_terminal_cwd_to_terminal_cwd(client, monkeypatch, tmp_path):
+    """A placeholder terminal.cwd ("." is the default) counts as unset, so TERMINAL_CWD names the folder."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(file_routes, "load_config", lambda: {"terminal": {"cwd": "."}})
+    monkeypatch.setenv("TERMINAL_CWD", str(home))
+
+    response = client.get("/api/fs/default-cwd")
+
+    assert response.status_code == 200
+    assert response.json()["cwd"] == str(home.resolve())
+
+
 def test_fs_read_text_decodes_double_encoded_non_ascii_path(client, tmp_path):
     target = tmp_path / "半导体行业运营分享会纪要.md"
     target.write_text("hello")

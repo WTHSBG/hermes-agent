@@ -244,8 +244,11 @@ def _fs_find_git_root(start: Path) -> str | None:
 
 def _fs_default_cwd() -> str:
     cfg_terminal = load_config().get("terminal") or {}
-    raw = str(cfg_terminal.get("cwd") or os.environ.get("TERMINAL_CWD") or "").strip()
-    if raw and raw not in {".", "auto", "cwd"}:
+    # A placeholder terminal.cwd counts as unset, so TERMINAL_CWD names the folder.
+    for raw in (cfg_terminal.get("cwd"), os.environ.get("TERMINAL_CWD")):
+        raw = str(raw or "").strip()
+        if raw in {"", ".", "auto", "cwd"}:
+            continue
         try:
             candidate = Path(raw).expanduser().resolve(strict=False)
             if candidate.is_dir():
