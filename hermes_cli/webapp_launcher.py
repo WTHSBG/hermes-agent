@@ -13,6 +13,8 @@ import json
 from pathlib import Path
 
 RESTART_COMMAND = "hermes gateway restart"
+# The gateway reads the Webapp's settings and sign-in providers only when it starts.
+RETRY_AFTER_FIX = f"The gateway reads these settings when it starts: after fixing them, run {RESTART_COMMAND}."
 
 
 class GatewayUnreachable(Exception):
@@ -99,6 +101,7 @@ def _status(target: Path) -> int:
         print(f"The Webapp is off. Set webapp.enabled: true in {target / 'config.yaml'}, then run {RESTART_COMMAND}.")
     else:
         print(f"Unavailable: {status['reason']}")
+        print(RETRY_AFTER_FIX)
     return 0
 
 
@@ -125,6 +128,8 @@ def _explain_refused_launch(target: Path, response: dict) -> int:
         print(f"The gateway started before the Webapp was turned on. Restart it to serve the Webapp: {RESTART_COMMAND}")
     else:
         print(_refusal(response))
+        if state == "unavailable":
+            print(RETRY_AFTER_FIX)
     return 1
 
 

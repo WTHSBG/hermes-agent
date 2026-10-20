@@ -112,13 +112,19 @@ def test_a_gateway_started_before_the_webapp_was_turned_on_asks_for_a_restart(wo
     assert world["calls"]["opened"] == []
 
 
-def test_a_webapp_the_gateway_could_not_serve_reports_why(world, capsys):
+def test_a_webapp_the_gateway_could_not_serve_reports_why_and_how_to_retry(world, capsys):
+    # The gateway reads the Webapp's settings and sign-in providers when it starts, so a fix only
+    # takes effect after a restart.
     reason = "could not listen on 127.0.0.1:9120 (Address already in use)"
     world["answers"]["webapp-launch"] = {"ok": False, "error": f"RuntimeError: The Webapp is unavailable: {reason}"}
     world["answers"]["webapp-status"] = {"ok": True, "result": {"state": "unavailable", "url": None,
                                                                "reason": reason}}
     assert launcher.cmd_webapp(_args()) == 1
-    assert reason in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert reason in out and "hermes gateway restart" in out
+    assert launcher.cmd_webapp(_args(status=True)) == 0
+    out = capsys.readouterr().out
+    assert reason in out and "hermes gateway restart" in out
 
 
 def test_no_open_prints_the_link_instead(world, capsys):
