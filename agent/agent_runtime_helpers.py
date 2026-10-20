@@ -2541,48 +2541,65 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             len(missing_results),
         )
 
-    # 3. Deduplicate tool_call_ids. Strict providers (DeepSeek) reject a
-    # payload where the same tool_call_id appears more than once with HTTP 400
-    # "Duplicate value for 'tool_call_id'" (#58327). Duplicates can arise from
-    # retries, crash/resume glitches, or a compression window that re-emits a
-    # tool result. This is the final pre-API chokepoint, so dedup defensively
-    # here even though repair_message_sequence also consumes matched ids.
-    #   (a) collapse duplicate tool_calls WITHIN an assistant message
-    #   (b) drop later tool result messages reusing an already-seen id
-    seen_assistant_call_ids: set = set()
-    seen_result_call_ids: set = set()
-    deduped: List[Dict[str, Any]] = []
-    removed_dupes = 0
-    for msg in messages:
+    # GritPath: normalize provider-reused tool_call_ids without dropping results.
+    # Some compatible gateways restart IDs at ``<tool>_0`` for every response.
+    # Dropping later occurrences loses valid results and makes the model repeat
+    # the same action. Rewrite only this API-call copy and preserve each pair.
+    seen_wire_ids: set = set()
+    pending_wire_ids: dict = {}
+    normalized_messages: List[Dict[str, Any]] = []
+    rewritten_ids = 0
+    for message_index, msg in enumerate(messages):
         role = msg.get("role")
         if role == "assistant" and msg.get("tool_calls"):
-            kept_tcs = []
-            for tc in msg.get("tool_calls") or []:
-                cid = _ra().AIAgent._get_tool_call_id_static(tc)
-                if cid and cid in seen_assistant_call_ids:
-                    removed_dupes += 1
-                    continue
-                if cid:
-                    seen_assistant_call_ids.add(cid)
-                kept_tcs.append(tc)
-            if len(kept_tcs) != len(msg.get("tool_calls") or []):
-                msg = {**msg, "tool_calls": kept_tcs}
-            deduped.append(msg)
+            normalized_calls = []
+            changed = False
+            for call_index, tc in enumerate(msg.get("tool_calls") or []):
+                original_id = _ra().AIAgent._get_tool_call_id_static(tc)
+                wire_id = original_id
+                if original_id and original_id in seen_wire_ids:
+                    wire_id = f"gp_call_{message_index}_{call_index}"
+                    suffix = 1
+                    while wire_id in seen_wire_ids:
+                        wire_id = f"gp_call_{message_index}_{call_index}_{suffix}"
+                        suffix += 1
+                if original_id:
+                    seen_wire_ids.add(wire_id)
+                    pending_wire_ids.setdefault(original_id, []).append(wire_id)
+                if wire_id != original_id:
+                    rewritten_ids += 1
+                    changed = True
+                    if isinstance(tc, dict):
+                        tc = dict(tc)
+                        if tc.get("call_id"):
+                            tc["call_id"] = wire_id
+                        else:
+                            tc["id"] = wire_id
+                    else:
+                        tc = tc.model_copy(deep=True) if hasattr(tc, "model_copy") else tc
+                        if getattr(tc, "call_id", None):
+                            tc.call_id = wire_id
+                        else:
+                            tc.id = wire_id
+                normalized_calls.append(tc)
+            if changed:
+                msg = {**msg, "tool_calls": normalized_calls}
+            normalized_messages.append(msg)
         elif role == "tool":
-            cid = (msg.get("tool_call_id") or "").strip()
-            if cid and cid in seen_result_call_ids:
-                removed_dupes += 1
-                continue
-            if cid:
-                seen_result_call_ids.add(cid)
-            deduped.append(msg)
+            original_id = (msg.get("tool_call_id") or "").strip()
+            queued = pending_wire_ids.get(original_id) or []
+            if queued:
+                wire_id = queued.pop(0)
+                if wire_id != original_id:
+                    msg = {**msg, "tool_call_id": wire_id}
+            normalized_messages.append(msg)
         else:
-            deduped.append(msg)
-    if removed_dupes:
-        messages = deduped
+            normalized_messages.append(msg)
+    if rewritten_ids:
+        messages = normalized_messages
         _ra().logger.debug(
-            "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
-            removed_dupes,
+            "Pre-call sanitizer: rewrote %d provider-reused tool_call_id pair(s)",
+            rewritten_ids,
         )
     return messages
 
