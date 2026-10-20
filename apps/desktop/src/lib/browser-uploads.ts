@@ -4,6 +4,9 @@ import { type BrowserBootstrap, browserFetch } from '@/lib/browser-transport'
 
 const STAGED_UPLOAD_CACHE_LIMIT = 256
 
+/** The largest file the browser stages on the host; mirrors WEBAPP_ATTACHMENT_MAX_BYTES (hermes_constants.py). */
+export const BROWSER_UPLOAD_MAX_BYTES = 16 * 1024 * 1024
+
 const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
   '.bmp': 'image/bmp',
   '.gif': 'image/gif',

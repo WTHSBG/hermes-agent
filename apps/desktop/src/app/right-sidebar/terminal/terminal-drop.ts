@@ -1,10 +1,16 @@
 import type { Terminal } from '@xterm/xterm'
 
+import { translateNow } from '@/i18n'
+import { BROWSER_UPLOAD_MAX_BYTES } from '@/lib/browser-uploads'
 import { triggerHaptic } from '@/lib/haptics'
+import { notify, notifyError } from '@/store/notifications'
 
 type TerminalApi = Window['hermesDesktop']['terminal']
 
 const HERMES_PATHS_MIME = 'application/x-hermes-paths'
+
+/** A host path, or an OS file with no path the browser must upload to get one. */
+type DroppedEntry = File | string
 
 function transferHasDropCandidates(t: DataTransfer): boolean {
   if (t.types?.includes(HERMES_PATHS_MIME)) {
@@ -24,8 +30,9 @@ function transferHasDropCandidates(t: DataTransfer): boolean {
   return false
 }
 
-function collectDroppedPaths(t: DataTransfer): string[] {
+function collectDroppedEntries(t: DataTransfer): DroppedEntry[] {
   const seen = new Set<string>()
+  const entries: DroppedEntry[] = []
 
   const push = (value: unknown) => {
     if (typeof value !== 'string') {
@@ -34,8 +41,9 @@ function collectDroppedPaths(t: DataTransfer): string[] {
 
     const path = value.trim()
 
-    if (path) {
+    if (path && !seen.has(path)) {
       seen.add(path)
+      entries.push(path)
     }
   }
 
@@ -52,32 +60,88 @@ function collectDroppedPaths(t: DataTransfer): string[] {
   }
 
   const getPath = window.hermesDesktop?.getPathForFile
+  // Only the browser-hosted Desktop stages bytes; Electron resolves an OS file to its own path.
+  const canStage = Boolean(window.hermesDesktop?.stageFileForAttach)
+  const fileCount = t.files?.length ?? 0
 
-  const addFile = (file: File | null) => {
-    if (!file || !getPath) {
+  // `items` repeats `files` with fresh File objects, so it supplies files to stage only when
+  // `files` is empty.
+  const addFile = (file: File | null, stageable: boolean) => {
+    if (!file) {
       return
     }
 
+    let path = ''
+
     try {
-      push(getPath(file))
+      path = getPath?.(file) ?? ''
     } catch {
       // File handle unavailable.
     }
+
+    if (path) {
+      push(path)
+    } else if (canStage && stageable) {
+      entries.push(file)
+    }
   }
 
-  for (let i = 0; i < (t.files?.length ?? 0); i += 1) {
-    addFile(t.files.item(i))
+  for (let i = 0; i < fileCount; i += 1) {
+    addFile(t.files.item(i), true)
   }
 
   for (let i = 0; i < (t.items?.length ?? 0); i += 1) {
     const item = t.items[i]
 
     if (item?.kind === 'file') {
-      addFile(item.getAsFile())
+      addFile(item.getAsFile(), fileCount === 0)
     }
   }
 
-  return [...seen]
+  return entries
+}
+
+// The browser uploads each dropped file to the host (the composer's staged upload) and types the
+// host path it gets back. A file over the upload limit is never sent; a warning names it.
+async function stageDroppedEntries(entries: DroppedEntry[]): Promise<string[]> {
+  const stage = window.hermesDesktop?.stageFileForAttach
+  const tooLarge: string[] = []
+
+  const paths = await Promise.all(
+    entries.map(async entry => {
+      if (typeof entry === 'string') {
+        return entry
+      }
+
+      if (entry.size > BROWSER_UPLOAD_MAX_BYTES) {
+        tooLarge.push(entry.name)
+
+        return ''
+      }
+
+      try {
+        return (await stage?.(entry)) ?? ''
+      } catch (error) {
+        notifyError(error, translateNow('rightSidebar.terminalDropUploadFailed', entry.name))
+
+        return ''
+      }
+    })
+  )
+
+  if (tooLarge.length) {
+    notify({
+      kind: 'warning',
+      title: translateNow('rightSidebar.terminalDropTooLargeTitle'),
+      message: translateNow(
+        'rightSidebar.terminalDropTooLarge',
+        tooLarge.join(', '),
+        `${BROWSER_UPLOAD_MAX_BYTES / (1024 * 1024)} MiB`
+      )
+    })
+  }
+
+  return paths.filter(Boolean)
 }
 
 function quotePathForShell(path: string, shellName: string): string {
@@ -103,7 +167,9 @@ interface TerminalDropOptions {
 }
 
 // Dropping files (from the OS or the app's file trees) types their shell-quoted
-// paths at the prompt, like a native terminal. Returns the listener teardown.
+// paths at the prompt, like a native terminal. In the browser-hosted Desktop an
+// OS file is uploaded to the host first and its host path is typed. Returns the
+// listener teardown.
 export function bindTerminalDrop(
   host: HTMLElement,
   { getSessionId, getShellName, markActivity, term, terminalApi }: TerminalDropOptions
@@ -127,16 +193,30 @@ export function bindTerminalDrop(
 
     e.preventDefault()
     e.stopPropagation()
-    const paths = collectDroppedPaths(e.dataTransfer)
+    const entries = collectDroppedEntries(e.dataTransfer)
 
-    if (!paths.length) {
+    if (!entries.length) {
       return
     }
 
-    markActivity()
-    void terminalApi.write(id, `${paths.map(p => quotePathForShell(p, getShellName())).join(' ')} `)
-    term.focus()
-    triggerHaptic('selection')
+    const typePaths = (paths: string[]) => {
+      if (!paths.length) {
+        return
+      }
+
+      markActivity()
+      void terminalApi.write(id, `${paths.map(p => quotePathForShell(p, getShellName())).join(' ')} `)
+      term.focus()
+      triggerHaptic('selection')
+    }
+
+    if (entries.every((entry): entry is string => typeof entry === 'string')) {
+      typePaths(entries)
+
+      return
+    }
+
+    void stageDroppedEntries(entries).then(typePaths)
   }
 
   host.addEventListener('dragenter', onDragOver)

@@ -23,6 +23,7 @@ import type { NoticeTranslations } from './types_notices'
 import type { OnboardingTranslations } from './types_onboarding'
 import type { PluginUpdateTranslations } from './types_plugin_update'
 import type { SidebarProjectsTranslations } from './types_projects'
+import type { RightSidebarTranslations } from './types_right_sidebar'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
 import type { ThemePickerCopy } from './types_theme_picker'
 import type { UninstallSectionTranslations } from './types_uninstall_section'
@@ -3661,52 +3662,7 @@ export interface Translations extends NoticeTranslations {
     }
   }
 
-  rightSidebar: {
-    aria: string
-    panelsAria: string
-    files: string
-    terminal: string
-    noFolderSelected: string
-    changeCwdTitle: string
-    remotePickerTitle: string
-    remotePickerDescription: string
-    remotePickerSelect: string
-    remotePickerNewFolder: string
-    remotePickerFolderName: string
-    remotePickerCreateFolder: string
-    remotePickerInvalidFolderName: string
-    remotePickerCreateFolderFailed: (error: string) => string
-    folderTip: (cwd: string) => string
-    openFolder: string
-    refreshTree: string
-    collapseAll: string
-    showIgnored: string
-    hideIgnored: string
-    previewUnavailable: string
-    couldNotPreview: (path: string) => string
-    noProjectTitle: string
-    noProjectBody: string
-    noProjectOpen: string
-    noDiffs: string
-    unreadableTitle: string
-    unreadableBody: (error: string) => string
-    emptyTitle: string
-    emptyBody: string
-    treeErrorTitle: string
-    treeErrorBody: string
-    tryAgain: string
-    loadingTree: string
-    loadingFiles: string
-    terminalHide: string
-    terminalsAria: string
-    terminalNew: string
-    terminalReadOnly: string
-    terminalReadOnlyHelp: string
-    terminalOpenInteractive: string
-    terminalCloseOthers: string
-    terminalCloseAll: string
-    addToChat: string
-  }
+  rightSidebar: RightSidebarTranslations
 
   preview: {
     tab: string
