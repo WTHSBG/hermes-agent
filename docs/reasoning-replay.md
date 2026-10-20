@@ -25,7 +25,9 @@ providers:
 ```
 
 The legacy `custom_providers` list accepts the same field. The setting applies
-only to the exact base URL (ignoring a trailing slash), across all model names.
+only to the matching base URL, across all model names. Trailing slashes and
+scheme/host casing are normalized; bare origins also match their standard
+`/v1` API root. Custom paths and different ports remain distinct.
 An explicit provider setting wins over `model.reasoning_replay`.
 
 - `auto` (default): retain existing upstream provider compatibility rules.

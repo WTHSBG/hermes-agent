@@ -71,8 +71,9 @@ def test_custom_preservation_does_not_invent_thinking(configured_endpoint, value
         assert "reasoning_content" not in wire
 
 
-def test_legacy_normalized_reasoning_is_preserved(configured_endpoint):
-    agent = make_agent("glm-5.3-flash")
+@pytest.mark.parametrize("model", MODELS)
+def test_legacy_normalized_reasoning_is_preserved(configured_endpoint, model):
+    agent = make_agent(model)
     source = {"role": "assistant", "reasoning": REAL_REASONING,
               "tool_calls": [{"id": "call_1"}]}
     wire = {"role": "assistant"}
@@ -115,6 +116,22 @@ def test_provider_without_policy_does_not_override_model_capability():
     config = {"model": {"base_url": BASE_URL, "reasoning_replay": "preserve"},
               "providers": {"inference": {"api": BASE_URL}}}
     assert get_custom_provider_reasoning_replay(BASE_URL, config) == "preserve"
+
+
+@pytest.mark.parametrize("configured,active", [
+    ("http://inference.example:35996", BASE_URL),
+    (BASE_URL, "http://INFERENCE.example:35996/"),
+])
+def test_standard_api_root_matches_bare_origin(configured, active):
+    config = {"model": {"base_url": configured, "reasoning_replay": "preserve"}}
+    assert get_custom_provider_reasoning_replay(active, config) == "preserve"
+
+
+def test_custom_path_and_port_boundaries_remain_distinct():
+    config = {"model": {"base_url": BASE_URL, "reasoning_replay": "preserve"}}
+    for destination in (BASE_URL + "/tenant", "http://inference.example:35997/v1",
+                        "http://inference.example:35996/V1"):
+        assert get_custom_provider_reasoning_replay(destination, config) == "auto"
 
 
 @pytest.mark.parametrize("model", MODELS)

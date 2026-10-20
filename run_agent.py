@@ -5432,6 +5432,13 @@ class AIAgent:
         Custom endpoints can opt in for every model via config.yaml. Resolve
         again when the destination changes, including fallback activation.
         """
+        policy = self._reasoning_replay_policy()
+        if policy != "auto":
+            return policy == "preserve"
+        return self._needs_thinking_reasoning_pad()
+
+    def _reasoning_replay_policy(self) -> str:
+        """Resolve the explicit replay policy, scoped to the current endpoint."""
         key = (self.provider, self.model, self.base_url)
         cached = getattr(self, "_reasoning_replay_cache", None)
         if cached is None or cached[0] != key:
@@ -5440,9 +5447,7 @@ class AIAgent:
             self._reasoning_replay_cache = (key, policy)
         else:
             policy = cached[1]
-        if policy != "auto":
-            return policy == "preserve"
-        return self._needs_thinking_reasoning_pad()
+        return policy
 
     def _needs_thinking_reasoning_pad(self) -> bool:
         """Return True when the active provider enforces reasoning_content echo-back.

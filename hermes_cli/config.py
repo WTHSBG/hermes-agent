@@ -4903,16 +4903,28 @@ def get_custom_provider_reasoning_replay(base_url: str, config=None) -> str:
     """
     if config is None:
         config = load_config()
-    target = (base_url or "").rstrip("/")
+    from urllib.parse import urlsplit, urlunsplit
+
+    def endpoint(value):
+        parts = urlsplit(value or "")
+        path = parts.path.rstrip("/")
+        # Bare Chat Completions origins and their standard /v1 API root
+        # describe the same destination. Preserve tenant/custom path identity.
+        if parts.netloc and path in {"", "/v1"}:
+            path = "/v1"
+        return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path,
+                           parts.query, parts.fragment))
+
+    target = endpoint(base_url)
     if not target:
         return "auto"
     for entry in get_compatible_custom_providers(config):
-        if (entry.get("base_url") or "").rstrip("/") == target:
+        if endpoint(entry.get("base_url")) == target:
             if "reasoning_replay" in entry:
                 return entry["reasoning_replay"]
             break
     model = config.get("model") or {}
-    if isinstance(model, dict) and (model.get("base_url") or "").rstrip("/") == target:
+    if isinstance(model, dict) and endpoint(model.get("base_url")) == target:
         replay = model.get("reasoning_replay", "auto")
         if not isinstance(replay, str) or replay not in {"auto", "preserve", "strip"}:
             raise ValueError("reasoning_replay must be auto, preserve, or strip")

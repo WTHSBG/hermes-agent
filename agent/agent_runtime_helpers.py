@@ -2794,6 +2794,7 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     normalized_reasoning = source_msg.get("reasoning")
     if (
         needs_thinking_pad
+        and agent._reasoning_replay_policy() != "preserve"
         and source_msg.get("tool_calls")
         and isinstance(normalized_reasoning, str)
         and normalized_reasoning
