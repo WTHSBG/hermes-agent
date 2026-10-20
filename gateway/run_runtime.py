@@ -505,14 +505,17 @@ async def start_gateway_runtime_api(runner):
         # Without the Webapp the listener is main's: the same call, a private ephemeral port.
         runner.session_api = await (run_api.start_gateway_api(runner, host=host, port=port, webapp=webapp)
                                     if webapp is not None else run_api.start_gateway_api(runner))
-    except Exception as exc:
+    except (Exception, SystemExit) as exc:
         if webapp is None:
             raise
-        # The Webapp's listener could not start (port taken, address unavailable, a wildcard bind
-        # with no dashboard sign-in provider): native clients still need this gateway, so it keeps
-        # main's private listener and reports why the Webapp is not served.
-        cause = (exc.strerror or exc) if isinstance(exc, OSError) else exc
-        reason = f"could not listen on {host}:{port} ({cause})"
+        # The Webapp's listener could not start (port taken, address unavailable, or the dashboard's
+        # auth gate exiting on a wildcard bind with no sign-in provider): native clients still need
+        # this gateway, so it keeps main's private listener and reports why the Webapp is not served.
+        if isinstance(exc, SystemExit):
+            reason = str(exc.code).strip()  # the gate's own message names the fix
+        else:
+            cause = (exc.strerror or exc) if isinstance(exc, OSError) else exc
+            reason = f"could not listen on {host}:{port} ({cause})"
         logger.error("Webapp unavailable: %s", reason)
         runner.webapp_status = {"state": "unavailable", "url": None, "reason": reason}
         runner.session_api = await run_api.start_gateway_api(runner)

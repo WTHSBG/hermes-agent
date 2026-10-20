@@ -213,11 +213,21 @@ def test_a_launch_link_refuses_a_malformed_profile_name(monkeypatch, tmp_path, p
     assert refused["ok"] is False and "profile" in refused["error"]
 
 
-def test_a_webapp_listener_that_cannot_start_still_leaves_native_clients_a_listener(monkeypatch, tmp_path):
-    refusal = RuntimeError("A non-loopback listener needs a dashboard sign-in provider")
+@pytest.mark.parametrize("refusal", [
+    # The dashboard's auth gate refuses a gated bind with no sign-in provider by exiting.
+    SystemExit("Refusing to bind dashboard to 0.0.0.0 — the auth gate engages on non-loopback binds "
+               "(0.0.0.0), but no auth providers are registered."),
+    RuntimeError("gateway API lifespan startup failed"),
+])
+def test_a_webapp_listener_that_cannot_start_still_leaves_native_clients_a_listener(monkeypatch, tmp_path, refusal):
     runner, calls, _ = _start_runtime_api(
         monkeypatch, tmp_path, "webapp:\n  enabled: true\n  host: 0.0.0.0\n", refuse=refusal)
     assert [(host, port) for host, port, _ in calls] == [("0.0.0.0", webapp.DEFAULT_PORT), ("127.0.0.1", 0)]
     assert runner.webapp_status["state"] == "unavailable"
-    assert "sign-in provider" in runner.webapp_status["reason"]
+    assert str(refusal) in runner.webapp_status["reason"]
     assert runner.session_runtime_descriptor["api_origin"] == "http://127.0.0.1:50001"
+
+
+def test_cancelling_the_gateway_while_the_webapp_listener_starts_cancels_it(monkeypatch, tmp_path):
+    with pytest.raises(asyncio.CancelledError):
+        _start_runtime_api(monkeypatch, tmp_path, "webapp:\n  enabled: true\n", refuse=asyncio.CancelledError())
