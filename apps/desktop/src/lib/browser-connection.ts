@@ -142,7 +142,10 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
     },
     // Reconnect belongs to the window, not whichever secondary profile is active.
     // Explicit null still selects the default backend.
-    getConnection: async (profile: null | string = windowProfile) => connectionFor(bootstrap, profile),
+    getConnection: async (profile: null | string = windowProfile) => ({
+      ...connectionFor(bootstrap, profile),
+      connectionId: LOCAL_CONNECTION_ID
+    }),
     getConnectionConfig: async (profile?: null | string) => browserConnectionConfig(bootstrap, profile),
     getConnectionFor: async (payload: { connectionId?: null | string; profile?: null | string }) => {
       requireBrowserConnection(payload.connectionId)

@@ -105,6 +105,8 @@ describe('browser-hosted Desktop bridge', () => {
     expect(new Headers(init.headers).has('X-Hermes-Session-Token')).toBe(false)
 
     const connection = await win.hermesDesktop!.getConnection()
+    // The gateway store routes this connection's requests onto the window's socket by its id.
+    expect(connection.connectionId).toBe('local')
     expect(connection.authMode).toBe('oauth')
     expect(connection.mode).toBe('remote')
     expect(connection.token).toBe('')
