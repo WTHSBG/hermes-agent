@@ -12,6 +12,9 @@
  *    credential is kept in the home) and the next turn works;
  *  - `hermes webapp --sign-out` cuts that tab off.
  *
+ * A second test puts the Webapp and Electron Desktop on one chat: Electron answers the approval a
+ * Webapp turn raised, and the Webapp stops a turn Electron started.
+ *
  * Linux (the /proc ancestry walk); needs the Webapp renderer (`npm run build:webapp`) and a
  * Chromium Playwright can launch (`npx playwright install chromium`, or HERMES_E2E_CHROMIUM).
  */
@@ -25,6 +28,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { type Browser, chromium, expect, type Page, test } from '@playwright/test'
 
 import {
+  appLogTail,
   backendProcesses,
   composer,
   coreAppEnv,
@@ -32,15 +36,18 @@ import {
   createCoreSandbox,
   currentSessionId,
   DESKTOP_ROOT,
+  launchCoreApp,
   recordWebSockets,
   REPO_ROOT,
   sandboxProcesses,
   send,
   storedSessionForMarker,
+  waitForInteractive,
   writeProviderHome
 } from './harness'
 import { assertTranscriptOracle, installDuplicateSampler } from './oracle'
-import { startScriptedProvider } from './provider'
+import { shellQuote } from './process-census'
+import { gate, startScriptedProvider } from './provider'
 
 const nonce = Math.random().toString(36).slice(2, 8).replace(/[^a-z0-9]/g, 'x').padEnd(4, 'q')
 const U = (n: number) => `U${n}-webapp${nonce}`
@@ -210,6 +217,145 @@ test('the gateway serves the Webapp and runs every turn its browser sends', asyn
     await page.reload()
     await expect(composer(page)).toBeHidden({ timeout: 60_000 })
   } finally {
+    await browser?.close().catch(() => undefined)
+
+    for (const proc of sandboxProcesses(sandbox)) {
+      try {
+        process.kill(proc.pid, 'SIGKILL')
+      } catch {
+        /* already gone */
+      }
+    }
+
+    await provider.close()
+    sandbox.cleanup()
+  }
+})
+
+function viewport(page: Page) {
+  return page.locator('[data-slot="aui_thread-viewport"]').filter({ visible: true }).first()
+}
+
+function approvalRun(page: Page) {
+  return page.locator('[data-approval-run]').filter({ visible: true })
+}
+
+function stopButton(page: Page) {
+  return page.locator('[data-slot="composer-root"] button[aria-label="Stop"]').filter({ visible: true })
+}
+
+/**
+ * One chat, two surfaces on one gateway: the Webapp in a browser and Electron Desktop attached to the
+ * same gateway. A prompt raised in a turn one surface started is answered from the other, resolves
+ * once, and leaves no stale card on the first; Stop on one surface ends the turn the other started.
+ */
+test("the Webapp and Electron Desktop answer and stop each other's turns on one gateway", async () => {
+  test.skip(process.platform !== 'linux', 'the gated command and the process census are Linux-only here')
+  test.setTimeout(480_000)
+  expect(
+    fs.existsSync(path.join(DESKTOP_ROOT, 'dist-webapp', 'index.html')),
+    'the Webapp renderer is built (npm run build:webapp)'
+  ).toBe(true)
+
+  const provider = await startScriptedProvider()
+  const sandbox = createCoreSandbox('webapp-cross')
+  writeProviderHome(sandbox.hermesHome, provider.url, '', 'manual')
+  const port = await freePort()
+  fs.appendFileSync(path.join(sandbox.hermesHome, 'config.yaml'), `\nwebapp:\n  enabled: true\n  port: ${port}\n`)
+  const hold = gate()
+  let browser: Browser | null = null
+  let desktop: Awaited<ReturnType<typeof launchCoreApp>> | null = null
+
+  try {
+    browser = await chromium.launch({ executablePath: process.env.HERMES_E2E_CHROMIUM || undefined })
+    const page: Page = await (await browser.newContext({ viewport: { width: 1280, height: 860 } })).newPage()
+    const ws = recordWebSockets(page)
+    await page.goto(launchLink(sandbox))
+    await expect(composer(page)).toBeVisible({ timeout: 180_000 })
+    await installDuplicateSampler(page)
+    await expect.poll(() => backendProcesses(sandbox).length, { message: 'one gateway serves the sandbox' }).toBe(1)
+    const [gateway] = backendProcesses(sandbox)
+
+    // The Webapp's turn stops at an approval.
+    const victim = path.join(sandbox.root, `victim-cross-${nonce}`)
+    fs.mkdirSync(victim)
+    provider.script(U(1), [
+      {
+        text: [`${AI(1)} `, 'needs ', 'approval'],
+        toolCalls: [{ name: 'terminal', args: { command: `rm -rf ${shellQuote(victim)}` } }]
+      },
+      { text: [`${A(1)} `, 'approved ', 'elsewhere'] }
+    ])
+    await send(page, `${U(1)} delete the dir`, 'Enter', ws)
+    await expect(approvalRun(page)).toHaveCount(1, { timeout: 120_000 })
+    await expect.poll(() => currentSessionId(page)).not.toBe('')
+    const sessionId = await currentSessionId(page)
+
+    // Electron Desktop attaches to the same gateway and opens the same chat.
+    desktop = await launchCoreApp(coreAppEnv(sandbox))
+    const desktopWs = recordWebSockets(desktop.page)
+    await waitForInteractive(desktop.app, desktop.page)
+    expect(backendProcesses(sandbox).map(proc => proc.pid), 'Electron attached to the serving gateway').toEqual([
+      gateway.pid
+    ])
+    await desktop.page.evaluate(id => {
+      window.location.hash = `#/${encodeURIComponent(id)}`
+    }, sessionId)
+    await expect.poll(() => currentSessionId(desktop!.page)).toBe(sessionId)
+
+    // Electron answers the Webapp's approval: it resolves once and the Webapp's card clears.
+    await expect(approvalRun(desktop.page), `Electron shows the pending approval\n${appLogTail(desktop.app)}`).toHaveCount(
+      1,
+      { timeout: 60_000 }
+    )
+    expect(fs.existsSync(victim), 'the gated command waits for the answer').toBe(true)
+    await approvalRun(desktop.page).click()
+    await expect
+      .poll(() => provider.completions.some(c => c.marker === U(1) && c.step === 1 && c.finished), {
+        timeout: 120_000,
+        message: `provider finished ${U(1)} after the approval`
+      })
+      .toBe(true)
+    expect(fs.existsSync(victim), 'the approved command ran').toBe(false)
+    await expect(approvalRun(page), "the Webapp's approval card clears").toHaveCount(0, { timeout: 30_000 })
+    await expect(approvalRun(desktop.page)).toHaveCount(0)
+    expect(desktopWs.sent.filter(frame => frame.method === 'approval.respond')).toHaveLength(1)
+    expect(ws.sent.filter(frame => frame.method === 'approval.respond')).toHaveLength(0)
+    expect(provider.completions.filter(c => c.marker === U(1) && c.step === 1)).toHaveLength(1)
+    await assertTranscriptOracle(page, ws, provider, { sessionId, expectUserMarkers: [U(1)] }, 'approval from Electron')
+    await expect(viewport(desktop.page)).toContainText(A(1), { timeout: 60_000 })
+
+    // Electron starts a turn; the Webapp shows it and stops it.
+    provider.script(U(2), [{ text: [`${A(2)} `, 'held ', 'until ', 'stopped'], holdAfterFirstChunk: hold }])
+    await send(desktop.page, `${U(2)} keep going`, 'Enter', desktopWs)
+    await provider.streamStarted(U(2))
+    await expect(viewport(page), "the Webapp shows Electron's turn").toContainText(A(2), { timeout: 60_000 })
+    await expect(stopButton(page), "the Webapp offers Stop for Electron's turn").toHaveCount(1, { timeout: 60_000 })
+    await stopButton(page).click()
+
+    const interrupted = () =>
+      desktopWs.events.find(
+        event =>
+          event.type === 'message.complete' &&
+          String(event.payload?.text ?? '').includes(A(2)) &&
+          event.payload?.status === 'interrupted'
+      )
+
+    await expect
+      .poll(() => Boolean(interrupted()), { timeout: 60_000, message: `Electron sees ${U(2)} end interrupted` })
+      .toBe(true)
+    hold.open()
+    await expect(stopButton(desktop.page)).toHaveCount(0, { timeout: 30_000 })
+    await expect(stopButton(page)).toHaveCount(0, { timeout: 30_000 })
+    expect(provider.completions.find(c => c.marker === U(2))?.finished, 'the held reply never streamed to its end').toBe(
+      false
+    )
+    expect(ws.sent.some(frame => frame.method === 'session.interrupt'), 'the Webapp sent the interrupt').toBe(true)
+    expect(desktopWs.sent.some(frame => frame.method === 'session.interrupt')).toBe(false)
+    expect(backendProcesses(sandbox).map(proc => proc.pid)).toEqual([gateway.pid])
+  } finally {
+    hold.open()
+    await desktop?.app.close().catch(() => undefined)
     await browser?.close().catch(() => undefined)
 
     for (const proc of sandboxProcesses(sandbox)) {
