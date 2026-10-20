@@ -5426,6 +5426,24 @@ class AIAgent:
         from agent.chat_completion_helpers import build_assistant_message
         return build_assistant_message(self, assistant_message, finish_reason)
 
+    def _should_preserve_reasoning_content(self) -> bool:
+        """Separate real reasoning replay from mandatory missing-field padding.
+
+        Custom endpoints can opt in for every model via config.yaml. Resolve
+        again when the destination changes, including fallback activation.
+        """
+        key = (self.provider, self.model, self.base_url)
+        cached = getattr(self, "_reasoning_replay_cache", None)
+        if cached is None or cached[0] != key:
+            from hermes_cli.config import get_custom_provider_reasoning_replay
+            policy = get_custom_provider_reasoning_replay(self.base_url)
+            self._reasoning_replay_cache = (key, policy)
+        else:
+            policy = cached[1]
+        if policy != "auto":
+            return policy == "preserve"
+        return self._needs_thinking_reasoning_pad()
+
     def _needs_thinking_reasoning_pad(self) -> bool:
         """Return True when the active provider enforces reasoning_content echo-back.
 

@@ -4626,7 +4626,7 @@ def _normalize_custom_provider_entry(
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
-        "ssl_ca_cert", "ssl_verify",
+        "ssl_ca_cert", "ssl_verify", "reasoning_replay",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -4768,6 +4768,12 @@ def _normalize_custom_provider_entry(
     elif isinstance(ssl_verify, str) and ssl_verify.strip():
         normalized["ssl_verify"] = ssl_verify.strip()
 
+    replay = entry.get("reasoning_replay")
+    if replay is not None:
+        if not isinstance(replay, str) or replay not in {"auto", "preserve", "strip"}:
+            raise ValueError("reasoning_replay must be auto, preserve, or strip")
+        normalized["reasoning_replay"] = replay
+
     return normalized
 
 
@@ -4798,6 +4804,7 @@ def _custom_provider_entry_to_provider_config(
         "extra_headers",
         "ssl_ca_cert",
         "ssl_verify",
+        "reasoning_replay",
     ):
         if field in normalized:
             provider_entry[field] = normalized[field]
@@ -4886,6 +4893,31 @@ def _coerce_ssl_verify(value: Any) -> Optional[bool]:
         if lowered in {"true", "1", "yes", "on"}:
             return True
     return None
+
+
+def get_custom_provider_reasoning_replay(base_url: str, config=None) -> str:
+    """Resolve replay capability for the exact destination, across all models.
+
+    An explicit provider entry wins over the active model's setting. The model
+    setting is URL-scoped so it cannot leak into an unrelated fallback endpoint.
+    """
+    if config is None:
+        config = load_config()
+    target = (base_url or "").rstrip("/")
+    if not target:
+        return "auto"
+    for entry in get_compatible_custom_providers(config):
+        if (entry.get("base_url") or "").rstrip("/") == target:
+            if "reasoning_replay" in entry:
+                return entry["reasoning_replay"]
+            break
+    model = config.get("model") or {}
+    if isinstance(model, dict) and (model.get("base_url") or "").rstrip("/") == target:
+        replay = model.get("reasoning_replay", "auto")
+        if not isinstance(replay, str) or replay not in {"auto", "preserve", "strip"}:
+            raise ValueError("reasoning_replay must be auto, preserve, or strip")
+        return replay
+    return "auto"
 
 
 def get_custom_provider_tls_settings(
@@ -5139,7 +5171,7 @@ _KNOWN_ROOT_KEYS = {
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
     "context_length", "rate_limit_delay", "extra_body",
-    "ssl_ca_cert", "ssl_verify",
+    "ssl_ca_cert", "ssl_verify", "reasoning_replay",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.
     "key_env",

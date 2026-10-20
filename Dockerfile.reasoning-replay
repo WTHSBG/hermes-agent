@@ -1,0 +1,18 @@
+# Overlay the verified deployed image so GritPath integrations remain intact.
+# Pass either the deployed outer image or its derived execution image.
+ARG DEPLOYED_IMAGE
+FROM ${DEPLOYED_IMAGE}
+ARG FORK_REVISION
+LABEL org.opencontainers.image.source="https://github.com/WTHSBG/hermes-agent" \
+      org.opencontainers.image.revision="${FORK_REVISION}"
+COPY run_agent.py /opt/hermes/run_agent.py
+COPY agent/agent_runtime_helpers.py /opt/hermes/agent/agent_runtime_helpers.py
+COPY agent/conversation_loop.py /opt/hermes/agent/conversation_loop.py
+COPY hermes_cli/config.py /opt/hermes/hermes_cli/config.py
+RUN /opt/hermes/.venv/bin/python -m py_compile \
+      /opt/hermes/run_agent.py /opt/hermes/agent/agent_runtime_helpers.py \
+      /opt/hermes/agent/conversation_loop.py /opt/hermes/hermes_cli/config.py \
+    && printf '%s\n' "$FORK_REVISION" > /opt/hermes/.hermes_build_sha
+# New execution sessions get the capability in their generated config.yaml.
+# Outer/main persistent config.yaml files are enabled separately at deployment.
+RUN /opt/hermes/.venv/bin/python -c 'from pathlib import Path; import yaml; p=Path("/opt/gritpath-data-template/config.yaml"); d=yaml.safe_load(p.read_text(encoding="utf-8")) if p.exists() else None; d is not None and d["model"].update(reasoning_replay="preserve"); d is not None and p.write_text(yaml.safe_dump(d, allow_unicode=True, sort_keys=False), encoding="utf-8")'

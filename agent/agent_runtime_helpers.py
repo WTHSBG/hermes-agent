@@ -2755,6 +2755,10 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
         return
 
     needs_thinking_pad = agent._needs_thinking_reasoning_pad()
+    preserve_reasoning = agent._should_preserve_reasoning_content()
+    if not preserve_reasoning:
+        api_msg.pop("reasoning_content", None)
+        return
 
     # 1. Explicit reasoning_content already set.
     #
@@ -2765,20 +2769,12 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     # empty-string placeholders pinned at creation time; DeepSeek V4 Pro
     # rejects those with HTTP 400, so upgrade "" → " " on replay.
     #
-    # When the active provider does NOT enforce echo-back, strip the field
-    # entirely. Strict OpenAI-compatible providers (Mistral, Cerebras, Groq,
-    # SambaNova, …) reject ANY reasoning_content key in input messages with
-    # HTTP 400/422 ("Extra inputs are not permitted"), even an empty string
-    # or a single-space pad. This is the cross-provider fallback case: a
-    # reasoning primary (DeepSeek/Kimi/MiMo) pads history with " ", then a
-    # fallback to a strict provider replays that pad and 422s. Stripping
-    # here covers the rebuild path; reapply_reasoning_echo_for_provider()
-    # covers the already-built api_messages path. Refs #45655.
+    # A compatible custom endpoint may accept real reasoning without requiring
+    # a placeholder. Do not infer rejection from the absence of a pad rule.
+    # Unsupported/strict destinations were handled above (refs #45655).
     existing = source_msg.get("reasoning_content")
     if isinstance(existing, str):
-        if not needs_thinking_pad:
-            api_msg.pop("reasoning_content", None)
-        elif existing == "":
+        if needs_thinking_pad and existing == "":
             api_msg["reasoning_content"] = " "
         else:
             api_msg["reasoning_content"] = existing
@@ -2809,13 +2805,10 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     # for providers that use the internal 'reasoning' key.
     # This must happen before the unconditional empty-string fallback so
     # genuine reasoning content is not overwritten (#15812 regression in
-    # PR #15478). Only promote for providers that enforce echo-back —
-    # strict providers reject the field (refs #45655).
+    # PR #15478). The replay capability check above excludes strict
+    # providers that reject the field (refs #45655).
     if isinstance(normalized_reasoning, str) and normalized_reasoning:
-        if needs_thinking_pad:
-            api_msg["reasoning_content"] = normalized_reasoning
-        else:
-            api_msg.pop("reasoning_content", None)
+        api_msg["reasoning_content"] = normalized_reasoning
         return
 
     # 4. DeepSeek / Kimi thinking mode: all assistant messages need
@@ -2836,7 +2829,7 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
 
 
 def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
-    """Re-pad (or strip) assistant turns' reasoning_content for the active provider.
+    """Preserve, pad or strip reasoning_content for the active destination.
 
     ``api_messages`` is built once, before the retry loop, while the *primary*
     provider is active.  A mid-conversation fallback can then switch providers,
@@ -2857,6 +2850,9 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
       fallback bug from #45655 — a DeepSeek primary pads history with ``" "``,
       the request falls back to Mistral, and Mistral 422s on the stale pad.
 
+    * Configured compatible endpoints preserve real reasoning even when they
+      do not need a pad. This capability applies to every model on the endpoint.
+
     Calling this immediately before building the request kwargs reconciles the
     fields against the *current* provider.  It is idempotent and safe to call
     every iteration; it covers every fallback path.
@@ -2864,16 +2860,16 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     Returns the number of assistant turns whose reasoning_content was added or
     removed.
     """
-    needs_pad = agent._needs_thinking_reasoning_pad()
+    preserve_reasoning = agent._should_preserve_reasoning_content()
     changed = 0
     for api_msg in api_messages:
         if api_msg.get("role") != "assistant":
             continue
-        if needs_pad:
-            if api_msg.get("reasoning_content"):
-                continue
+        if preserve_reasoning:
+            before = ("reasoning_content" in api_msg, api_msg.get("reasoning_content"))
             copy_reasoning_content_for_api(agent, api_msg, api_msg)
-            if api_msg.get("reasoning_content"):
+            after = ("reasoning_content" in api_msg, api_msg.get("reasoning_content"))
+            if after != before:
                 changed += 1
         else:
             # Strict provider — strip any stale reasoning_content pad left

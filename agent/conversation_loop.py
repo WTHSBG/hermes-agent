@@ -1157,8 +1157,12 @@ def run_conversation(
                 # echo-back pad for the *current* provider here (idempotent no-op
                 # unless the active provider needs it) so the fallback request
                 # isn't sent with stale, primary-shaped reasoning fields.
-                agent._reapply_reasoning_echo_for_provider(api_messages)
-                api_kwargs = agent._build_api_kwargs(api_messages)
+                # Reconcile a request-local copy. A strict fallback may strip
+                # real reasoning, but a later retry to the compatible primary
+                # must still have the original replay fields available.
+                request_messages = [dict(msg) for msg in api_messages]
+                agent._reapply_reasoning_echo_for_provider(request_messages)
+                api_kwargs = agent._build_api_kwargs(request_messages)
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":
