@@ -1,6 +1,16 @@
+import { GatewayReauthRequiredError } from '@hermes/shared'
+
 const FRAGMENT_KEY = 'hermes-session'
 
 export const WEBAPP_LAUNCH_REQUIRED = 'Run hermes webapp on this computer to sign this browser in.'
+
+/**
+ * This tab holds no credential the gateway accepts, and only a new launch link signs it in. The
+ * reconnect loop stops on this error and the startup overlay shows the Webapp sign-in view.
+ */
+export function webappSignInRequired(): GatewayReauthRequiredError {
+  return new GatewayReauthRequiredError(WEBAPP_LAUNCH_REQUIRED)
+}
 
 /** Pasting the launch link over a bare URL is a same-document navigation. */
 export function watchWebappLaunchLink(reload: () => void): void {

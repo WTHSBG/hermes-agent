@@ -1,9 +1,10 @@
+import { isGatewayReauthRequired } from '@hermes/shared'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { pluginSocket } from '@/api/plugins'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
-import { consumeWebappSession, watchWebappLaunchLink } from './browser-launch-session'
+import { consumeWebappSession, watchWebappLaunchLink, WEBAPP_LAUNCH_REQUIRED } from './browser-launch-session'
 
 const win = window as Window & {
   __HERMES_UI_SURFACE__?: string
@@ -191,4 +192,31 @@ it.each(['window', 'session'] as const)('hands off a private %s through a one-us
   await expect(failed).rejects.toThrow()
   expect(Channel.current.postMessage).toHaveBeenCalledWith({ error: expect.any(String) })
   expect(Channel.current.close).toHaveBeenCalledOnce()
+})
+
+it('asks a tab without a working credential to sign in, so reconnecting stops', async () => {
+  // The reconnect loop stops retrying only for an error that reads as a sign-in requirement;
+  // the startup overlay then shows the Webapp sign-in view for this message.
+  const failure = (request: Promise<unknown>) => request.then(() => null, (error: unknown) => error)
+  win.__HERMES_UI_SURFACE__ = 'webapp'
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('Unauthorized', { status: 401 })))
+  expect(installBrowserDesktopBridge()).toBe(true)
+
+  for (const error of [
+    await failure(window.hermesDesktop!.getConnection()),
+    await failure(window.hermesDesktop!.api({ path: '/api/status' }))
+  ]) {
+    expect(isGatewayReauthRequired(error)).toBe(true)
+    expect((error as Error).message).toBe(WEBAPP_LAUNCH_REQUIRED)
+  }
+
+  // hermes webapp --sign-out replaced the credential this tab holds.
+  window.dispatchEvent(new Event('beforeunload'))
+  Reflect.deleteProperty(window, 'hermesDesktop')
+  window.history.replaceState(null, '', `/#hermes-session=${'d'.repeat(43)}`)
+  expect(installBrowserDesktopBridge()).toBe(true)
+  const signedOut = await failure(window.hermesDesktop!.api({ path: '/api/status' }))
+
+  expect(isGatewayReauthRequired(signedOut)).toBe(true)
+  expect((signedOut as Error).message).toBe(WEBAPP_LAUNCH_REQUIRED)
 })

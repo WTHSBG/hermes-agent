@@ -1,7 +1,7 @@
 import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 
 import type { HermesApiRequest, HermesConnection } from '@/global'
-import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
+import { webappSignInRequired } from '@/lib/browser-launch-session'
 import {
   type BrowserBootstrap,
   BrowserReauthRequiredError,
@@ -22,7 +22,7 @@ export function requireBrowserConnection(connectionId?: null | string): void {
 }
 
 function connectionFor(bootstrap: BrowserBootstrap, profile?: null | string): HermesConnection {
-  if (!bootstrap.authRequired && !bootstrap.token) {throw new Error(WEBAPP_LAUNCH_REQUIRED)}
+  if (!bootstrap.authRequired && !bootstrap.token) {throw webappSignInRequired()}
 
   const baseUrl = `${window.location.origin}${bootstrap.basePath}`
 

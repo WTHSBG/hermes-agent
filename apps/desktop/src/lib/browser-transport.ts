@@ -1,7 +1,7 @@
 import { BROWSER_NATIVE_DIAL, buildHermesWebSocketUrl, normalizeBasePath } from '@hermes/shared'
 
 import type { HermesApiRequest } from '@/global'
-import { consumeWebappSession, WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
+import { consumeWebappSession, webappSignInRequired } from '@/lib/browser-launch-session'
 import { type BrowserHostGlobals, hasBrowserHostBootstrap } from '@/lib/platform'
 
 export interface BrowserBootstrap {
@@ -143,7 +143,7 @@ export async function browserFetch(
   bootstrap: BrowserBootstrap,
   request: BrowserFetchRequest
 ): Promise<{ response: Response; text: string }> {
-  if (!bootstrap.authRequired && !bootstrap.token) {throw new Error(WEBAPP_LAUNCH_REQUIRED)}
+  if (!bootstrap.authRequired && !bootstrap.token) {throw webappSignInRequired()}
 
   const controller = request.timeoutMs === undefined ? null : new AbortController()
   const timeout = controller ? window.setTimeout(() => controller.abort(), request.timeoutMs) : null
@@ -163,7 +163,7 @@ export async function browserFetch(
     const text = await response.text()
 
     if (!response.ok) {
-      if (!bootstrap.authRequired && response.status === 401) {throw new Error(WEBAPP_LAUNCH_REQUIRED)}
+      if (!bootstrap.authRequired && response.status === 401) {throw webappSignInRequired()}
 
       const authError = reauthError(bootstrap, response, text)
 
