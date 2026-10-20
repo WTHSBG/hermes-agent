@@ -3128,7 +3128,7 @@ webapp:
 ```
 
 - `enabled` — the gateway reads it at start; restart the gateway after changing it (`hermes gateway restart`).
-- `host` — a loopback address keeps the Webapp on this machine. `0.0.0.0` or `::` makes it reachable from other machines and requires a [dashboard sign-in provider](./features/web-dashboard.md#authentication-gated-mode); without one the gateway serves native clients only and `hermes webapp --status` says why. Any other value keeps the Webapp off.
+- `host` — a loopback address keeps the Webapp on this machine. `0.0.0.0` or `::` makes it reachable from other machines and requires a [dashboard sign-in provider](./features/web-dashboard.md#authentication-gated-mode); without one the gateway serves native clients only and `hermes webapp --status` says why. Restart the gateway after adding the provider. Any other value keeps the Webapp off.
 - `port` — when the port is taken, the gateway likewise serves native clients only and `hermes webapp --status` reports why.
 
 The Webapp settings are read from the config of the gateway that serves the profile: the default profile's config for named profiles it serves, a standalone profile's own config otherwise.

@@ -54,15 +54,18 @@ keeps in that tab, so reloading keeps you signed in, and so does a gateway resta
 bare URL shows instructions instead of access: run `hermes webapp` again for a new link. **New
 Window**, profile windows and session pop-outs hand the sign-in over with their own one-use link. On
 macOS the command prints the gateway's private link instead, for you to open; it signs a browser in as
-you until you sign out, so keep it private. `hermes webapp --sign-out` signs out every tab.
+you until you sign out, so keep it private. `hermes webapp --sign-out` signs out every tab at once: their
+open connections close and each shows the sign-in instructions.
 
 For a named profile, `hermes -p work webapp` opens the Webapp on `work`. Profiles the default gateway
 serves share its Webapp; a standalone profile's own gateway serves its own when its config turns it on.
 
 **From another machine.** Set `webapp.host` to `0.0.0.0`; the gateway then requires the
 [dashboard sign-in gate](./features/web-dashboard.md#authentication-gated-mode) (username and password
-for a trusted LAN or VPN, OAuth/OIDC for anything internet-facing). HTTPS is strongly recommended
-remotely and browsers require it for some microphone and clipboard features.
+for a trusted LAN or VPN, OAuth/OIDC for anything internet-facing). `hermes webapp` then opens the
+Webapp's address, where you sign in with your dashboard account; one-use links serve only a loopback
+Webapp. HTTPS is strongly recommended remotely and browsers require it for some microphone and
+clipboard features.
 
 :::warning Treat Webapp access like access to Hermes on the host
 A signed-in Webapp user can run arbitrary commands as the OS account running Hermes, run agent tools,
@@ -72,7 +75,8 @@ a sign-in provider. Prefer an SSH tunnel, Tailscale or another trusted VPN.
 
 `hermes webapp --status` shows whether the gateway serves the Webapp. When it cannot (the port is
 taken, or a wildcard host has no sign-in provider), the gateway still serves native clients and the
-status says why.
+status says why. The gateway reads these settings when it starts, so restart it after fixing the cause
+(`hermes gateway restart`).
 
 Browser-selected files are staged under the active profile before they enter the normal attachment
 flow, with a **16 MiB** limit per file. Host files download through the browser's download manager, and
@@ -88,10 +92,12 @@ sessions adopt` for another profile), or open them once in the native Desktop, T
 
 ### Terminal in the Webapp
 
-The terminal rail opens the host's interactive shell, running as a child of the gateway. Refreshing the
-page or losing the connection detaches the terminal without ending its shell; the saved terminal tab
-reattaches to that shell and its profile. Hiding a terminal is not closing it; closing its tab ends the
-shell. A second browser tab attaching to the same terminal takes over the connection.
+The terminal rail opens the host's interactive shell, running as a child of the gateway, in your home
+folder unless `terminal.cwd` names another. Dropping files onto it uploads them to the host (**16 MiB**
+each) and types their paths. Refreshing the page or losing the connection detaches the terminal
+without ending its shell; the saved terminal tab reattaches to that shell and its profile. Hiding a
+terminal is not closing it; closing its tab ends the shell. A second browser tab attaching to the same
+terminal takes over the connection.
 
 Detached shells are kept for **15 minutes** while the gateway runs, up to **16 host terminals**
 including detached ones. A gateway restart or update ends them. Reconnecting replays up to **1 MiB** of
