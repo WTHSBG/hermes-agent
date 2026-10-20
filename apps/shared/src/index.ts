@@ -180,6 +180,7 @@ export {
 export { type UpdateDebt, updateDebt, type UpdateDebtReceipt, type UpdateDebtStep } from './update-debt'
 export { usageFromTick, type UsageTickPayload } from './usage-tick'
 export {
+  BROWSER_NATIVE_DIAL,
   buildHermesWebSocketUrl,
   type GatewayAuthMode,
   GatewayReauthRequiredError,

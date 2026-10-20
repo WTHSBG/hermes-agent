@@ -7,6 +7,7 @@ import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 import { desktopGit } from './desktop-git'
 import { openLink } from './external-link'
+import { resolveDesktopGatewayWsUrl } from './gateway-ws-url'
 import { downloadGatewayMediaFile, resolveMediaPlaybackSrc } from './media'
 
 type MutableWindow = Window & {
@@ -1050,6 +1051,20 @@ describe('browser-hosted Desktop bridge', () => {
     await expect(win.hermesDesktop!.getGatewayWsUrl('worker-a')).rejects.toThrow(
       '503: {"detail":"gateway unavailable"}'
     )
+  })
+
+  it("rejects a dial whose ticket mint fails instead of dialing the Webapp's credential-free socket URL", async () => {
+    const win = mutableWindow()
+    seedWebappSession('served-token')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('{"detail":"gateway unavailable"}', { status: 503 }))
+    )
+    expect(installBrowserDesktopBridge()).toBe(true)
+    const desktop = win.hermesDesktop!
+    const connection = await desktop.getConnection('worker-a')
+
+    await expect(resolveDesktopGatewayWsUrl(desktop, connection)).rejects.toThrow('503')
   })
 
   it('bounds the ticket mint by the ordinary request timeout, not a gateway cold start', async () => {

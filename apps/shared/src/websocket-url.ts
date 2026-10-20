@@ -78,13 +78,14 @@ export async function resolveGatewayWsUrl(deps: ResolveGatewayWsUrlDeps, conn: G
     }
   }
 
-  // A native dial's descriptor URL carries no credential of its own, so a failed mint IS the answer
+  // The Webapp's descriptor URL carries no credential of its own, so a failed mint IS the answer
   // (a gateway that cannot attach says why); falling back to that URL only fails later, nameless.
-  const nativeDial = hasNativeDial(conn.wsUrl)
+  // Every other descriptor falls back to its cached URL and leaves the retry to the reconnect loop.
+  const mintRequired = nativeDialOf(conn.wsUrl) === BROWSER_NATIVE_DIAL
 
   if (mint) {
     const fresh = await mint(profile).catch((error: unknown) => {
-      if (nativeDial) {
+      if (mintRequired) {
         throw error
       }
 
@@ -99,7 +100,7 @@ export async function resolveGatewayWsUrl(deps: ResolveGatewayWsUrlDeps, conn: G
       return fresh.wsUrl
     }
 
-    if (fresh && nativeDial) {
+    if (fresh && mintRequired) {
       throw new Error(fresh.error || 'Could not mint a gateway WebSocket ticket.')
     }
   }
@@ -107,11 +108,14 @@ export async function resolveGatewayWsUrl(deps: ResolveGatewayWsUrlDeps, conn: G
   return conn.wsUrl
 }
 
-function hasNativeDial(wsUrl: string): boolean {
+/** The `native_dial` value on the browser-hosted Desktop's own socket URL. */
+export const BROWSER_NATIVE_DIAL = 'browser'
+
+function nativeDialOf(wsUrl: string): null | string {
   try {
-    return new URL(wsUrl).searchParams.has('native_dial')
+    return new URL(wsUrl).searchParams.get('native_dial')
   } catch {
-    return false
+    return null
   }
 }
 

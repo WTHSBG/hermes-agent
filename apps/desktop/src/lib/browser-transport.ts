@@ -1,4 +1,4 @@
-import { buildHermesWebSocketUrl, normalizeBasePath } from '@hermes/shared'
+import { BROWSER_NATIVE_DIAL, buildHermesWebSocketUrl, normalizeBasePath } from '@hermes/shared'
 
 import type { HermesApiRequest } from '@/global'
 import { consumeWebappSession, WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
@@ -285,7 +285,7 @@ export async function gatewayWebsocketUrl(bootstrap: BrowserBootstrap, profile?:
 /** The credential-free canonical socket URL a browser connection descriptor reports. */
 export function gatewaySocketUrl(bootstrap: BrowserBootstrap, profile?: null | string): string {
   const url = new URL(websocketUrl(bootstrap.basePath, '/api/ws', {}, profile))
-  url.searchParams.set('native_dial', 'browser')
+  url.searchParams.set('native_dial', BROWSER_NATIVE_DIAL)
 
   return url.toString()
 }
