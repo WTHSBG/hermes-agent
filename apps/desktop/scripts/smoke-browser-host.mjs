@@ -8,6 +8,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import process from 'node:process'
 
 import { CDP, sleep } from './perf/lib/cdp.mjs'
+import { shownStartupTitlesExpression, startupScreenFailures } from './smoke-browser-host-screens.mjs'
 
 const url = process.env.HERMES_BROWSER_HOST_URL || process.argv[2] || 'http://127.0.0.1:9120/'
 // Navigation keeps the private launch fragment; HTTP responses never contain it.
@@ -122,6 +123,7 @@ const stateExpression = `(() => {
     requiredBridgeMethods: requiredBridgeMethods.every(key => typeof window.hermesDesktop?.[key] === 'function'),
     rootError: text.includes('Something broke in the interface'),
     scrollWidth: document.documentElement.scrollWidth,
+    startupTitles: ${shownStartupTitlesExpression},
     privateSession: window.__HERMES_UI_SURFACE__ === 'webapp',
     title: document.title
   }
@@ -384,6 +386,7 @@ try {
     if (state.rootError) failures.push('renderer reached its root error boundary')
     if (!allowGatewayFailure && state.desktopBootFailed)
       failures.push('Desktop could not connect to the Hermes gateway')
+    failures.push(...startupScreenFailures(state.startupTitles, { allowGatewayFailure }))
     // The gateway serves the page and the live socket: it speaks the canonical contract (native_dial)
     // and never carries the session token.
     if (!allowGatewayFailure && state.privateSession) {
